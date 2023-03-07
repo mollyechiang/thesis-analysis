@@ -1,0 +1,94 @@
+,food_id,genus_species,ASV
+1,ACA,Acanthus pubescens,ASV55
+2,THV,Acanthus pubescens,ASV55
+3,AFR,Aframomum sp.,ASV20
+4,ANI,Aningeria altissima,ASV14
+5,APH,Aphania senegalensis,ASV28
+6,APH,Aphania senegalensis,ASV123
+7,CAF,Celtis africana,ASV3
+8,CDU,Celtis durandii,ASV179
+9,CHT,Chaetacme aristata,ASV6
+10,CHT,Chaetacme aristata,ASV56
+11,CHT,Chaetacme aristata,ASV70
+12,CHT,Chaetacme aristata,ASV72
+13,CHT,Chaetacme aristata,ASV85
+14,CHT,Chaetacme aristata,ASV100
+15,CHT,Chaetacme aristata,ASV113
+16,CHT,Chaetacme aristata,ASV117
+17,CHT,Chaetacme aristata,ASV125
+18,CHT,Chaetacme aristata,ASV129
+19,CHT,Chaetacme aristata,ASV134
+20,CHT,Chaetacme aristata,ASV137
+21,CHT,Chaetacme aristata,ASV181
+22,CHT,Chaetacme aristata,ASV183
+23,CHT,Chaetacme aristata,ASV187
+24,CHT,Chaetacme aristata,ASV193
+25,CHT,Chaetacme aristata,ASV194
+26,CHT,Chaetacme aristata,ASV201
+27,CHT,Chaetacme aristata,ASV213
+28,CHT,Chaetacme aristata,ASV218
+29,CHT,Chaetacme aristata,ASV223
+30,CHT,Chaetacme aristata,ASV227
+31,CHT,Chaetacme aristata,ASV253
+32,CHT,Chaetacme aristata,ASV270
+33,CHT,Chaetacme aristata,ASV276
+34,CHT,Chaetacme aristata,ASV285
+35,CHT,Chaetacme aristata,ASV294
+36,CHT,Chaetacme aristata,ASV307
+37,CHT,Chaetacme aristata,ASV315
+38,CHT,Chaetacme aristata,ASV326
+39,CMD,Celtis mildbraedii,ASV22
+40,COA,Cordia abyssinica,ASV23
+41,COM,Cordia millenii (ugandensis),ASV23
+42,DMA,Dovyalis macrocarpa,ASV42
+43,DMA,Dovyalis macrocarpa,ASV377
+44,EHR,Ehretia cymosa,ASV176
+45,FBR,Ficus brachylepis (sansibarica),ASV1
+45,FBR,Ficus brachylepis (sansibarica),ASV7
+46,FCP,Ficus capensis (sur),ASV1
+,FCP,Ficus capensis (sur),ASV7
+47,FCY,Ficus cyathistipula,ASV1
+,FCY,Ficus cyathistipula,ASV7
+48,FDA,Ficus dawei (saussureana),ASV1
+,FDA,Ficus dawei (saussureana),ASV7
+49,FEX,Ficus exasperata,ASV1
+,FEX,Ficus exasperata,ASV7
+50,FMU,Ficus mucuso,ASV1
+,FMU,Ficus mucuso,ASV7
+51,FNA,Ficus natalensis,ASV1
+,FNA,Ficus natalensis,ASV7
+52,FTH,Ficus thoningii,ASV9
+53,FUR,Ficus urceolaris (asperifolia),ASV1
+,FUR,Ficus urceolaris (asperifolia),ASV7
+54,FVA,Ficus vallis-choudae,ASV1
+,FVA,Ficus vallis-choudae,ASV7
+55,ILL,Illigera pentaphylla,ASV13
+56,ILL,Illigera pentaphylla,ASV136
+57,ILL,Illigera pentaphylla,ASV150
+58,ILL,Illigera pentaphylla,ASV168
+59,ILL,Illigera pentaphylla,ASV185
+60,ILL,Illigera pentaphylla,ASV191
+61,ILL,Illigera pentaphylla,ASV297
+62,ILL,Illigera pentaphylla,ASV309
+63,JAS,Jasminum sp.,NA
+64,LNC,Linociera johnsonii,NA
+65,LOW,Lepistemon owariensis,ASV12
+66,MAR,Marantochloa leucantha,ASV32
+67,MDR,Monodora myristica,NA
+68,MMS,Mimusops bagshawei,ASV51
+69,NEO,Neoboutonia macrocalyx,ASV145
+70,PHY,Phytolacca dodecandra,ASV30
+71,PPY,Cyperus papyrus,ASV292
+72,PSD,Pseudospondias microcarpa,ASV8
+73,PTE,Pterygota mildbraedii,ASV5
+74,PTE,Pterygota mildbraedii,ASV251
+75,RDC,Red colobus (Colobus badius),NA
+76,TDA,Toddalia asiatica,ASV18
+77,TEC,Teclea nobilis,ASV26
+78,TRI,Trichilia splendida,ASV17
+79,TTO,Triumfetta tomentosa,NA
+80,URH,Urera hypsiloides,ASV31
+81,URH,Urera hypsiloides,ASV240
+82,URH,Urera hypsiloides,ASV383
+83,URH,Urera hypsiloides,ASV385
+84,UVA,Uvariopsis congensis,NA
