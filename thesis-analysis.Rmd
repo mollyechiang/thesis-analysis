@@ -1,0 +1,3011 @@
+---
+title: "Senior Thesis"
+author: "Molly Chiang"
+date: "22-23"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = FALSE)
+
+# load all necessary libraries
+library(phyloseq)
+library(qiime2R)
+library(vegan)
+library(ggpubr)
+library(cowplot)
+library(readxl)
+library(reshape2)
+library(ggpubr)
+library(janitor)
+library(ape) 
+library(lubridate)
+library(stringr)
+library(multcompView)
+
+# for Maaslin tests:
+library(Maaslin2)
+library(tools)
+library(filesstrings)
+
+library(tidyverse)
+
+# COLORS:
+# community:
+# scale_color_manual(values = c("#F3722C", "#43AA8B")) +
+# scale_fill_manual(values = c("#F7A477", "#80CDB6")) +
+
+# season: 
+# scale_color_manual(values = c("#AE2012", "#0A9396")) +
+# scale_fill_manual(values = c("#FBD9D6", "#D0FBFC")) +
+
+# fruit season:
+# scale_color_manual(values = c("#F9844A", "#277DA1")) +
+# scale_fill_manual(values = c("#FDD3BE", "#A6D5E9")) +
+
+```
+
+## Read in Data
+
+```{r read data}
+
+# setwd("~/Desktop/theis/R")
+
+### MB section
+# read meta data
+meta_mb <- read_q2metadata("metadata/merged_map.txt")
+meta_mb2 <- read_xlsx("metadata/1-s2.0-S0960982220316523-mmc3.xlsx")
+meta_fecal <- read_xlsx("metadata/MollyMetabarcoding-Metadata-Updated.xlsx")
+
+meta <- meta_mb %>% 
+  left_join(meta_mb2, by = c("SampleID" = "Sample ID")) %>% 
+  select(-Primer_Well, - Primer_ID, -Primer_Plate, -YearChange, -YearChange_age_transition, 
+         -YearChange_time, -Description, -Name) %>% 
+  clean_names() %>% 
+  select(sample_id, barcode_sequence, linker_primer_sequence, fecal_sample_id, 
+        chimpanzee_name, community_y, sex_y, chimpanzee_number, chimpanzee_age, 
+        age, age_group, sample_collection_date, month, day, year, year_quarter,
+        x16s_copies_per_g_feces, features_per_sample, shannon_index, observed_ot_us)
+
+meta_diet <- read_xlsx('metadata/MollyMetabarcoding-Metadata-Updated.xlsx') %>% 
+  filter(`Metabarcoding Sample ID` != 'MMBC359') %>% 
+  filter(`Metabarcoding Sample ID` != 'MMBC382') %>% 
+  mutate(month = month(Date)) %>% 
+  mutate(season = case_when(month %in% c(1,2,6,7,8,12) ~ "dry",
+                            month %in% c(3,4,5,9,10,11) ~ "wet"))
+
+# asv table - mb samples 
+asv_table <- read_qza("merged-table.qza")$data
+
+# asv taxonomy - mb samples 
+taxonomy <- read_qza("taxonomy.qza")$data %>% 
+  parse_taxonomy()
+
+# asv phylogeny - mb samples
+tree <- read_qza("rooted-tree.qza")$data
+
+
+### Diet section
+# diet sample ASV names
+asv_names <- sprintf("ASV%d",seq(1:406))
+
+# asv table - diet samples
+asv_table_diet <- read.csv("diet_analysis/feature-table.tsv", sep = "\t") %>% 
+  select(-X.OTU.ID)
+
+row.names(asv_table_diet) <- asv_names
+
+# taxonomy - diet samples
+taxonomy_diet <- read.csv("diet_analysis/taxonomy-v7-emv-FINAL2-manual.tsv", sep = "\t") 
+
+taxonomy_diet[c('ASV_number', 'Domain', 'Kingdom', 'Phylum', 'Class', 'Order', 'Family', 'Genus', 'Species')] <- str_split_fixed(taxonomy_diet$Kingdom.Phylum.Class.Order.Family.Genus, ' ', 9)
+
+taxonomy_diet <- taxonomy_diet %>% 
+  select(-Kingdom.Phylum.Class.Order.Family.Genus.Species.NA, -ASV_number)
+
+row.names(taxonomy_diet) <- asv_names
+
+# tree/phylogeny - diet samples
+tree_diet <- read.tree("diet_analysis/rep-seqs.tree")
+
+```
+
+```{r read in Zarin Data}
+
+# read in data and add missing rows so we can rbind
+community_counts_day2 <- read_xlsx("Zarin Data/Daily Diet with sliding counts for community_KPC.xlsx",
+                              sheet = "Feeding scans_community_day 2") %>% 
+                          mutate(`Total Obs Scan Count_1 day` = NA)
+community_counts_day1 <- read_xlsx("Zarin Data/Daily Diet with sliding counts for community_KPC.xlsx",
+                              sheet = "Feeding scans_community_day 1") %>% 
+                          mutate(`Total Obs Scan Count_2 day` = NA) %>%
+                          mutate(`FDA UF` = NA) %>%
+                          mutate(`FTH RF` = NA) %>%
+                          mutate(`ILL YL` = NA) %>%
+                          mutate(`JAS YL` = NA) %>%
+                          mutate(`PPY PT` = NA) %>%
+                          mutate(`RDC MT` = NA) %>%
+                          mutate(`URH RF` = NA) 
+
+# combine day -1 and day -2 -- and get accurate sums of time spent observed
+# eating each plant across the 48 hours
+community_counts_48hrs <- rbind(community_counts_day2, community_counts_day1) %>% 
+  replace(is.na(.), 0) %>% 
+  group_by(Date, Chimp_ID) %>% 
+  summarize_each(list(sum)) %>% 
+  mutate(total_obs_scan = `Total Obs Scan Count_1 day` + `Total Obs Scan Count_2 day`) %>% 
+  select(-`Total Obs Scan Count_1 day`, -`Total Obs Scan Count_2 day`) %>% 
+  na_if(., 0)
+
+# same proces for sample counts -- combine day -1 and day -2 
+sample_counts_day2 <- read_xlsx("Zarin Data/Daily Diet with sliding counts for each sample ID_KPC.xlsx", sheet = "2 day scan counts")
+sample_counts_day1 <- read_xlsx("Zarin Data/Daily Diet with sliding counts for each sample ID_KPC.xlsx", sheet = "1 day scan counts") %>% 
+   mutate(`COA RF` = NA) %>%
+   mutate(`COA YL` = NA) %>%
+   mutate(`FVA UF` = NA) %>%
+   mutate(`PPY PT` = NA) %>%
+   mutate(`RDC MT` = NA) %>%
+   mutate(`TRI YL` = NA)
+
+sample_counts_48hrs <- rbind(sample_counts_day2, sample_counts_day1) %>% 
+  # MEC - note that not all chimps were observed both day-2 and day-1 from their sample 
+    # collection -- so some of the obs data is a sum from both days and some is only one day
+  replace(is.na(.), 0) %>% 
+  group_by(Date, Chimp_ID) %>% 
+  summarise_each(list(sum)) %>% 
+  na_if(., 0)
+
+plant_codes <- read_xlsx("Zarin Data/Plant Food Codes.xlsx")
+
+ripe_fruit <- read_xlsx("Zarin Data/ripe fruit by month.xlsx") 
+
+ripe_fruit <- ripe_fruit%>% 
+  mutate(ripe_fruit_level = case_when(
+    perc_diet_RF >= mean(ripe_fruit$perc_diet_RF) ~ "high-fruit",
+    perc_diet_RF < mean(ripe_fruit$perc_diet_RF) ~ "low-fruit",
+  )) %>% 
+  mutate(year_lasttwo = as.integer(str_sub(Year, -2,-1)))
+
+```
+
+```{r filter for only chimps that we sequenced for trnL - and add seasons}
+
+# ensure the sample IDs are found in the fecal sample metadata
+# also add column for dry vs wet season and ripe fruit level
+meta_filtered <- meta %>%
+  filter(sample_id %in% meta_fecal$`Sample ID`) %>% 
+  filter(sample_id != 'CA367') %>% 
+  rename(community = community_y,
+         sex = sex_y) %>% 
+  mutate(season = case_when(month %in% c(1,2,6,7,8,12) ~ "dry",
+                            month %in% c(3,4,5,9,10,11) ~ "wet")) %>% 
+  left_join(ripe_fruit, by = c('year' = 'year_lasttwo', 'month' = 'Month')) %>% 
+  select(-age, -sample_collection_date, -OBS_TIME, -feed_hours, -RF_hrs, -perc_diet_RF, -Year)
+# use meta_filtered in all cases below! for mb stuff
+
+# add column for ripe fruit levels 
+meta_diet <- meta_diet %>% 
+  mutate(year = year(Date)) %>% 
+  left_join(ripe_fruit, by = c('year' = 'Year', 'month' = 'Month')) %>% 
+  select(-OBS_TIME, -feed_hours, -RF_hrs, -perc_diet_RF, -month, -year, -year_lasttwo)
+
+```
+
+
+## Data Prep -- create phyloseq object, Zarin data cleaning
+
+```{r create phyloseq experimental object - mb data}
+# first, create a phyloseq-formatted metadata table (i.e. "sample data")
+# note that need to give it a metadata with sample IDs as rownames, NOT an individual column, so we'll do that first
+rownames(meta_filtered) = meta_filtered$sample_id
+phylo_meta = sample_data(meta_filtered)
+
+# create phylosec-formatted asv table (aka otu table)
+phylo_table <- otu_table(asv_table, taxa_are_rows = T)
+
+asv_table_df <- asv_table %>%
+  data.frame() %>% 
+  mutate(ASV = rownames(asv_table))
+rownames(asv_table_df) = NULL
+
+# phyloseq formatted taxonomy
+phylo_tax <- tax_table(as.matrix(taxonomy))
+
+taxonomy_df <- taxonomy %>% 
+  data.frame() %>% 
+  mutate(ASV = rownames(taxonomy))
+rownames(taxonomy_df) = NULL
+
+# phyloseq formatted phylogeny
+phylo_tree = phy_tree(tree)
+
+# merge all 4 into one object
+phylo_all = phyloseq(phylo_table, phylo_meta, phylo_tax, phylo_tree)
+
+```
+
+```{r create phyloseq experimental object - diet data}
+
+# new metadata with the diet sample ids (MBC ones vs CA ones)
+phylo_meta_diet = sample_data(meta_diet)
+row.names(phylo_meta_diet) <- meta_diet$`Metabarcoding Sample ID`
+
+# create phylosec-formatted asv table (aka otu table)
+phylo_table_diet <- otu_table(asv_table_diet, taxa_are_rows = T)
+
+# phyloseq formatted taxonomy
+phylo_tax_diet <- tax_table(as.matrix(taxonomy_diet))
+
+taxonomy_df_diet <- taxonomy_diet %>%
+  data.frame() %>%
+  mutate(ASV = rownames(taxonomy_diet))
+
+rownames(taxonomy_df_diet) = NULL
+
+na_ASVs <- taxonomy_df_diet %>% 
+  filter(Domain == "NA") %>% 
+  select(ASV) 
+
+na_ASVs <- na_ASVs$ASV
+
+# phyloseq formatted phylogeny
+phylo_tree_diet = phy_tree(tree_diet)
+
+# merge all 4 into one object
+phylo_all_diet = phyloseq(phylo_table_diet, phylo_meta_diet, phylo_tax_diet, phylo_tree_diet)
+
+```
+
+```{r Zarin data cleaning}
+
+# create some small data frames to match sample ids, metabarcoding ids, 
+# and plant anmes
+tofind_sampleids <- meta_filtered %>% 
+  mutate(date = as.Date(paste(day, month, year, sep = '-'), "%d-%m-%y")) %>% 
+  select(chimpanzee_name, date, sample_id)
+# MEC - need to drop OG 2015-07-08 bc somehow the dates and months were mixed up
+
+tofind_sampleids2 <- meta_diet %>% 
+  clean_names() %>% 
+  select(metabarcoding_sample_id, sample_id)
+
+plant_codes_tomerge <- plant_codes %>% 
+  select(food_id, genus_species)
+
+# convert the counts from Zarin into a table that has the chimp and all the plant species 
+# they were observed eating during our 48 hour period
+community_counts_long <- community_counts_48hrs %>% 
+  pivot_longer(cols = `ACA PT`:`UVA RF`, names_to = "plants", values_to = "time_obs_eating",
+              values_drop_na = TRUE) %>% 
+  group_by(Date, Chimp_ID) %>% 
+  mutate(time_obs_total = sum(time_obs_eating)) %>% 
+  mutate(rel_time_eating = time_obs_eating/time_obs_total) %>% 
+  left_join(tofind_sampleids, by = c("Chimp_ID" = "chimpanzee_name", "Date" = "date")) %>% 
+  drop_na() %>% 
+  left_join(tofind_sampleids2, by = "sample_id") %>% 
+  ungroup() %>%
+  group_by(plants) %>% 
+  mutate(food_id = sapply(str_split(toString(plants), " "), head, 1)) %>% 
+  ungroup() %>% 
+  left_join(plant_codes_tomerge, by = "food_id")
+# 42 plants observed
+
+sample_counts_long <- sample_counts_48hrs %>% 
+  pivot_longer(cols = `AFR PT`:`UVA RF`, names_to = "plants", values_to = "time_obs_eating",
+              values_drop_na = TRUE) %>% 
+  group_by(Date, Chimp_ID) %>% 
+  left_join(tofind_sampleids, by = c("Chimp_ID" = "chimpanzee_name", "Date" = "date")) %>% 
+  drop_na() %>% 
+  left_join(tofind_sampleids2, by = "sample_id") %>% 
+  ungroup() %>%
+  group_by(plants) %>% 
+  mutate(food_id = sapply(str_split(toString(plants), " "), head, 1)) %>% 
+  ungroup() %>% 
+  left_join(plant_codes_tomerge, by = "food_id")
+# 32 species observed 
+
+plant_codes_observed <- plant_codes_tomerge %>% 
+  filter(food_id %in% unique(community_counts_long$food_id))
+
+```
+
+
+
+## Metadata Plots
+
+```{r phenotypical plots}
+
+# distribution of sexes, ages, seasons, and communities 
+
+meta_filtered %>% 
+  ggplot(aes(x = sex, fill = sex)) +
+  geom_bar() +
+  labs(title = "Sex Breakdown of Chimps in Study",
+       x = "Sex",
+       y = "Number of Samples",
+       fill = "Sex") +
+  scale_fill_manual(values = c("#5A5A5A", "#A9A9A9")) +
+  theme_minimal()
+
+meta_filtered %>% 
+  ggplot(aes(x = season, fill = season)) +
+  geom_bar() +
+  labs(title = "Rain Season Breakdown of Samples in Study",
+       x = "Precipitation Season",
+       y = "Number of Samples",
+       fill = "Rain Season") +
+  scale_fill_manual(values = c("#AE2012", "#0A9396")) +
+  theme_minimal()
+
+meta_filtered %>% 
+  ggplot(aes(x = ripe_fruit_level, fill = ripe_fruit_level)) +
+  geom_bar() +
+  labs(title = "Fruit Season Breakdown of Samples in Study",
+       x = "Fruit Season",
+       y = "Count",
+       fill = "Fruit Season") +
+  scale_fill_manual(values = c("#F9844A", "#277DA1")) +
+  theme_minimal()
+
+meta_filtered %>% 
+  drop_na(chimpanzee_age) %>% 
+  ggplot(aes(x = chimpanzee_age)) +
+  geom_histogram(binwidth=7) +
+  labs(title = "Age Breakdown of Chimps in Study",
+       x = "Age",
+       y = "Count") +
+  theme_minimal()
+
+meta_filtered %>% 
+  ggplot(aes(x = community, fill = community)) +
+  geom_bar() +
+  labs(title = "Communities of Chimps in Study",
+       x = "Community",
+       y = "Count",
+       fill = "Community") +
+  scale_fill_manual(values = c("#F3722C", "#43AA8B")) +
+  theme_minimal()
+
+
+# Age means 
+mean(meta_filtered$chimpanzee_age)
+median(meta_filtered$chimpanzee_age)
+median(meta_diet$Age)
+mean(meta_diet$Age)
+sd(meta_filtered$chimpanzee_age)
+sd(meta_diet$Age)
+
+
+```
+
+
+## Alpha Diversity (observed and shannon)
+```{r alpha diversity - mb, commmunity}
+
+# use estimate_richness() to calculate shannon alpha diveristy 
+adiv <- estimate_richness(phylo_all, measures = c("Shannon", "Observed", "InvSimpson"))
+
+# change the rownames into a column (SampleID)
+adiv$SampleID <- rownames(adiv)
+
+# join with meta data and filter for relevant treatments
+adiv_meta <- inner_join(meta_filtered, adiv, by = c("sample_id" = "SampleID")) 
+
+# Adiv (shannon) and community -- mb
+adiv_meta %>% 
+  ggplot(aes(x = community, y = Shannon, fill = community)) +
+  geom_boxplot() +
+  labs(x = "Community",
+       y = "Shannon Index",
+       title = "Microbiome Alpha Diversity by Community") +
+  scale_color_manual(values = c("#F3722C", "#43AA8B")) +
+  scale_fill_manual(values = c("#F7A477", "#80CDB6")) +
+  stat_compare_means(method = "t.test", label.x = 1.4) +
+  theme_minimal()
+
+# Adiv (observed richness) and community -- mb
+adiv_meta %>% 
+  ggplot(aes(x = community, y = Observed, fill = community)) +
+  geom_boxplot() +
+  labs(x = "Community",
+       y = "Observed Richness",
+       title = "Microbiome Richness by Community") +
+  scale_color_manual(values = c("#F3722C", "#43AA8B")) +
+  scale_fill_manual(values = c("#F7A477", "#80CDB6")) +
+  stat_compare_means(method = "t.test", label.x = 1.4) +
+  theme_minimal()
+
+# Adiv (inv simpson) and community -- mb
+adiv_meta %>% 
+  ggplot(aes(x = community, y = InvSimpson, fill = community)) +
+  geom_boxplot() +
+  labs(x = "Community",
+       y = "Alpha Diveristy (InvSimpson)",
+       title = "Microbiome Alpha Diversity (InvSimpson) by Community") +
+  scale_color_manual(values = c("#F3722C", "#43AA8B")) +
+  scale_fill_manual(values = c("#F7A477", "#80CDB6")) +
+  stat_compare_means(method = "t.test", label.x = 1.4) +
+  theme_minimal()
+
+# t-tests for shannon diversity
+K_shan_mb <- adiv_meta %>% 
+  filter(community == "Kanyawara") %>%
+  select(sample_id, Shannon)
+
+N_shan_mb <- adiv_meta %>% 
+  filter(community == "Ngogo")%>%
+  select(sample_id, Shannon)
+
+t.test(K_shan_mb["Shannon"], N_shan_mb["Shannon"])
+
+
+# t-tests for observed 
+K_ob_mb <- adiv_meta %>% 
+  filter(community == "Kanyawara") %>%
+  select(sample_id, Observed)
+
+N_ob_mb <- adiv_meta %>% 
+  filter(community == "Ngogo")%>%
+  select(sample_id, Observed)
+
+t.test(K_ob_mb["Observed"], N_ob_mb["Observed"])
+
+```
+
+```{r adiv - mb, season}
+
+# Adiv (shannon) and season -- mb
+adiv_meta %>% 
+  ggplot(aes(x = season, y = Shannon, fill = season)) +
+  geom_boxplot() +
+  labs(x = "Precipitation Season",
+       y = "Shannon Index",
+       title = "Microbiome Alpha Diversity by Precipitation Season") +
+  scale_fill_manual(values = c("#AE2012", "#0A9396")) +
+  stat_compare_means(method = "t.test", label.x = 1.4) +
+  theme_minimal()
+
+# Adiv (observed richness) and Rain Season -- mb
+adiv_meta %>% 
+  ggplot(aes(x = season, y = Observed, fill = season)) +
+  geom_boxplot() +
+  labs(x = "Precipitation Season",
+       y = "Observed Richness",
+       title = "Microbiome Richness by Precipitation Season") +
+  scale_fill_manual(values = c("#AE2012", "#0A9396")) +
+  stat_compare_means(method = "t.test", label.x = 1.4) +
+  theme_minimal()
+
+# Adiv (InvSimpson) and season -- mb
+adiv_meta %>% 
+  ggplot(aes(x = season, y = InvSimpson, fill = season)) +
+  geom_boxplot() +
+  labs(x = "Rain Season",
+       y = "InvSimpson",
+       title = "Microbiome Alpha Diveristy by Rain Season (Inv Simpson)") +
+  scale_fill_manual(values = c("#AE2012", "#0A9396")) +
+  stat_compare_means(method = "t.test", label.x = 1.4) +
+  theme_minimal()
+
+# t-tests for shannon diversity
+dry_shan_mb <- adiv_meta %>% 
+  filter(season == "dry") %>%
+  select(sample_id, Shannon)
+
+wet_shan_mb <- adiv_meta %>% 
+  filter(season == "wet") %>%
+  select(sample_id, Shannon)
+
+t.test(dry_shan_mb["Shannon"], wet_shan_mb["Shannon"])
+
+
+# t-tests for observed 
+dry_ob_mb <- adiv_meta %>% 
+  filter(season == "dry") %>%
+  select(sample_id, Observed)
+
+wet_ob_mb <- adiv_meta %>% 
+  filter(season == "wet")%>%
+  select(sample_id, Observed)
+
+t.test(dry_ob_mb["Observed"], wet_ob_mb["Observed"])
+
+## FRUIT SEASON
+# shannon and fruit season - mb
+adiv_meta %>% 
+  ggplot(aes(x = ripe_fruit_level, y = Shannon, fill = ripe_fruit_level)) +
+  geom_boxplot() +
+  labs(x = "Fruit Season",
+       y = "Shannon Index",
+       title = "Microbiome Alpha Diversity by Fruit Season") +
+  scale_fill_manual(values = c("#F9844A", "#277DA1")) +
+  #scale_fill_manual(values = c("#FDD3BE", "#A6D5E9")) +
+  stat_compare_means(method = "t.test", label.x = 1.4) +
+  theme_minimal()
+
+# observed and fruit season - mb
+adiv_meta %>% 
+  ggplot(aes(x = ripe_fruit_level, y = Observed, fill = ripe_fruit_level)) +
+  geom_boxplot() +
+  labs(x = "Fruit Season",
+       y = "Observed Richness",
+       title = "Microbiome Richness by Fruit Season") +
+  scale_fill_manual(values = c("#F9844A", "#277DA1")) +
+  # scale_fill_manual(values = c("#FDD3BE", "#A6D5E9")) +
+  stat_compare_means(method = "t.test", label.x = 1.4) +
+  theme_minimal()
+
+# InvSimpson and fruit season - mb
+adiv_meta %>% 
+  ggplot(aes(x = ripe_fruit_level, y = InvSimpson, color = ripe_fruit_level, fill = ripe_fruit_level)) +
+  geom_boxplot() +
+  labs(x = "Fruit Season",
+       y = "InvSimpson",
+       title = "Microbiome Alpha Diversity by Fruit Season (InvSimpson)") +
+  scale_color_manual(values = c("#F9844A", "#277DA1")) +
+  scale_fill_manual(values = c("#FDD3BE", "#A6D5E9")) +
+  stat_compare_means(method = "t.test", label.x = 1.4) +
+  theme_minimal()
+  
+# t-tests for shannon diversity - fruit
+lf_shan_mb <- adiv_meta %>% 
+  filter(ripe_fruit_level == "low fruit") %>%
+  select(sample_id, Shannon)
+
+hf_shan_mb <- adiv_meta %>% 
+  filter(ripe_fruit_level == "high fruit") %>%
+  select(sample_id, Shannon)
+
+t.test(lf_shan_mb["Shannon"], hf_shan_mb["Shannon"])
+
+# t-tests for observed - fruit
+lf_ob_mb <- adiv_meta %>% 
+  filter(ripe_fruit_level == "low fruit") %>%
+  select(sample_id, Observed)
+
+hf_ob_mb <- adiv_meta %>% 
+  filter(ripe_fruit_level == "high fruit")%>%
+  select(sample_id, Observed)
+
+t.test(lf_ob_mb["Observed"], hf_ob_mb["Observed"])
+
+```
+
+```{r alpha diversity - diet, community}
+# use estimate_richness() to calculate shannon alpha diveristy 
+adiv_diet <- estimate_richness(phylo_all_diet, measures = c("Shannon", "Observed", "InvSimpson"))
+
+# change the rownames into a column (SampleID)
+adiv_diet$SampleID <- rownames(adiv_diet)
+
+# join with meta data and filter for relevant treatments
+adiv_meta_diet <- inner_join(meta_diet, adiv_diet, by = c(`Metabarcoding Sample ID` = "SampleID")) 
+
+# Adiv (shannon) and community -- diet
+adiv_meta_diet %>% 
+  ggplot(aes(x = Community, y = Shannon, fill = Community)) +
+  geom_boxplot() +
+  labs(x = "Community",
+       y = "Shannon Index",
+       title = "Diet Alpha Diversity by Community") +
+  scale_fill_manual(values = c("#F3722C", "#43AA8B")) +
+  stat_compare_means(method = "t.test", label.x = 1.4, label.y = 3) +
+  theme_minimal() 
+
+# Adiv (observed richness) and community -- diet
+adiv_meta_diet %>% 
+  ggplot(aes(x = Community, y = Observed, fill = Community)) +
+  geom_boxplot() +
+  labs(x = "Community",
+       y = "Observed Richness",
+       title = "Dietary Richness by Community") +
+  scale_fill_manual(values = c("#F3722C", "#43AA8B")) +
+  stat_compare_means(method = "t.test", label.x = 1.4) +
+  theme_minimal()
+
+# Adiv (InvSimpson) and community -- diet
+adiv_meta_diet %>% 
+  ggplot(aes(x = Community, y = InvSimpson, color = Community, fill = Community)) +
+  geom_boxplot() +
+  labs(x = "Community",
+       y = "InvSimpson",
+       title = "Dietary Alpha Diversity by Community (InvSimpson)") +
+  scale_color_manual(values = c("#F3722C", "#43AA8B")) +
+  scale_fill_manual(values = c("#F7A477", "#80CDB6")) +
+  stat_compare_means(method = "t.test", label.x = 1.4) +
+  theme_minimal()
+
+# t-tests for shannon diversity
+K_shan_diet <- adiv_meta_diet %>% 
+  filter(Community == "Kanyawara") %>%
+  select(`Metabarcoding Sample ID`, Shannon)
+
+N_shan_diet <- adiv_meta_diet %>% 
+  filter(Community == "Ngogo")%>%
+  select(`Metabarcoding Sample ID`, Shannon)
+
+t.test(K_shan_diet["Shannon"], N_shan_diet["Shannon"])
+
+# t-tests for observed 
+K_ob_diet <- adiv_meta_diet %>% 
+  filter(Community == "Kanyawara") %>%
+  select(`Metabarcoding Sample ID`, Observed)
+
+N_ob_diet <- adiv_meta_diet %>% 
+  filter(Community == "Ngogo")%>%
+  select(`Metabarcoding Sample ID`, Observed)
+
+t.test(K_ob_diet["Observed"], N_ob_diet["Observed"])
+
+```
+
+```{r adiv - diet, season}
+
+# Adiv (shannon) and season -- diet
+adiv_meta_diet %>% 
+  ggplot(aes(x = season, y = Shannon, fill = season)) +
+  geom_boxplot() +
+  labs(x = "Precipitation Season",
+       y = "Shannon Index",
+       title = "Diet Alpha Diversity by Precipitation Season") +
+  scale_fill_manual(values = c("#AE2012", "#0A9396")) +
+  # scale_fill_manual(values = c("#FBD9D6", "#D0FBFC")) +
+  stat_compare_means(method = "t.test", label.x = 1.4) +
+  theme_minimal()
+
+# Adiv (observed richness) and season -- diet
+adiv_meta_diet %>% 
+  ggplot(aes(x = season, y = Observed, fill = season)) +
+  geom_boxplot() +
+  labs(x = "Precipitation Season",
+       y = "Observed Richness",
+       title = "Diet Richness by Precipitation Season") +
+  scale_fill_manual(values = c("#AE2012", "#0A9396")) +
+  # scale_fill_manual(values = c("#FBD9D6", "#D0FBFC")) +
+  stat_compare_means(method = "t.test", label.x = 1.4, label.y = 40) +
+  geom_segment(aes(x = 1, y = 35, xend = 2, yend = 35), inherit.aes=FALSE) +
+  geom_text(label="*", aes(x=1.5, y=36), color = "black", inherit.aes=FALSE) + 
+  theme_minimal()
+
+# Adiv (InvSimpson) and season -- diet
+adiv_meta_diet %>% 
+  ggplot(aes(x = season, y = InvSimpson, color = season, fill = season)) +
+  geom_boxplot() +
+  labs(x = "Rain Season",
+       y = "InvSimpson",
+       title = "Diet Alpha Diversity by Rain Season (Inv Simpson)") +
+  scale_color_manual(values = c("#AE2012", "#0A9396")) +
+  scale_fill_manual(values = c("#FBD9D6", "#D0FBFC")) +
+  stat_compare_means(method = "t.test", label.x = 1.4) +
+  theme_minimal()
+
+# t-tests for shannon diversity
+dry_shan_mb <- adiv_meta_diet %>% 
+  filter(season == "dry") %>%
+  select(`Metabarcoding Sample ID`, Shannon)
+
+wet_shan_mb <- adiv_meta_diet %>% 
+  filter(season == "wet") %>%
+  select(`Metabarcoding Sample ID`, Shannon)
+
+t.test(dry_shan_mb["Shannon"], wet_shan_mb["Shannon"])
+
+# t-tests for observed 
+dry_ob_mb <- adiv_meta_diet %>% 
+  filter(season == "dry") %>%
+  select(`Metabarcoding Sample ID`, Observed)
+
+wet_ob_mb <- adiv_meta_diet %>% 
+  filter(season == "wet")%>%
+  select(`Metabarcoding Sample ID`, Observed)
+
+t.test(dry_ob_mb["Observed"], wet_ob_mb["Observed"])
+
+## FRUIT SEASON
+# shannon and fruit season - diet
+adiv_meta_diet %>% 
+  ggplot(aes(x = ripe_fruit_level, y = Shannon, fill = ripe_fruit_level)) +
+  geom_boxplot() +
+  labs(x = "Fruit Season",
+       y = "Shannon Index",
+       title = "Diet Alpha Diversity by Fruit Season") +
+  scale_fill_manual(values = c("#F9844A", "#277DA1")) +
+  stat_compare_means(method = "t.test", label.x = 1.4, label.y = 2.7) +
+  geom_segment(aes(x = 1, y = 2.43, xend = 2, yend = 2.43), inherit.aes=FALSE) +
+  geom_text(label="*", aes(x=1.5, y=2.48), color = "black", inherit.aes=FALSE) + 
+  theme_minimal()
+
+# observed and fruit season - diet
+adiv_meta_diet %>% 
+  ggplot(aes(x = ripe_fruit_level, y = Observed, fill = ripe_fruit_level)) +
+  geom_boxplot() +
+  labs(x = "Fruit Season",
+       y = "Observed Richness",
+       title = "Diet Richness by Fruit Season") +
+  scale_fill_manual(values = c("#F9844A", "#277DA1")) +
+  stat_compare_means(method = "t.test", label.x = 1.4, label.y = 38) +
+  geom_segment(aes(x = 1, y = 35, xend = 2, yend = 35), inherit.aes=FALSE) +
+  geom_text(label="**", aes(x=1.5, y=35.5), color = "black", inherit.aes=FALSE) + 
+  theme_minimal()
+
+# Adiv (InvSimpson) and fruit season -- diet
+adiv_meta_diet %>% 
+  ggplot(aes(x = ripe_fruit_level, y = InvSimpson, color = ripe_fruit_level, fill = ripe_fruit_level)) +
+  geom_boxplot() +
+  labs(x = "Fruit Season",
+       y = "InvSimpson",
+       title = "Diet Alpha Diversity by Fruit Season (Inv Simpson)") +
+  scale_color_manual(values = c("#F9844A", "#277DA1")) +
+  scale_fill_manual(values = c("#FDD3BE", "#A6D5E9")) +
+  stat_compare_means(method = "t.test", label.x = 1.4) +
+  theme_minimal()
+  
+# t-tests for shannon diversity - fruit
+lf_shan_diet <- adiv_meta_diet %>% 
+  filter(ripe_fruit_level == "low fruit") %>%
+  select(`Metabarcoding Sample ID`, Shannon)
+
+hf_shan_diet <- adiv_meta_diet %>% 
+  filter(ripe_fruit_level == "high fruit") %>%
+  select(`Metabarcoding Sample ID`, Shannon)
+
+t.test(lf_shan_diet["Shannon"], hf_shan_diet["Shannon"])
+
+# t-tests for observed - fruit
+lf_ob_diet <- adiv_meta_diet %>% 
+  filter(ripe_fruit_level == "low fruit") %>%
+  select(`Metabarcoding Sample ID`, Observed)
+
+hf_ob_diet <- adiv_meta_diet %>% 
+  filter(ripe_fruit_level == "high fruit")%>%
+  select(`Metabarcoding Sample ID`, Observed)
+
+t.test(lf_ob_diet["Observed"], hf_ob_diet["Observed"])
+
+
+```
+
+```{r diet vs mb alpha diversity - shannon and observed and inv simp}
+
+## Shannon
+diet_mb_adiv <- adiv_meta %>% 
+  select(sample_id, community, season, Shannon) %>% 
+  left_join(adiv_meta_diet, by = c("sample_id" = 'Sample ID')) %>% 
+  select(sample_id, `Metabarcoding Sample ID`, community, season.x, Shannon.x, Shannon.y) %>% 
+  rename(mb_shannon = Shannon.x) %>% 
+  rename(diet_shannon = Shannon.y) %>% 
+  rename(season = season.x)
+
+diet_mb_adiv %>% 
+  ggplot(aes(x = diet_shannon, y = mb_shannon, color = community, shape = season)) +
+  geom_jitter(height = 0.4, width = 0.4) + 
+  geom_smooth(method='lm', formula= y~x, se = FALSE, aes(group = 1), color = 'black') +
+  labs(x = "Diet Diversity (Shannon Index)",
+       y = "Microbiome Diversity (Shannon Index)",
+       title = "Dietary vs Microbiome Diversity",
+       color = "Community",
+       shape = "Precipitation Season") +
+  scale_color_manual(values = c("#F3722C", "#43AA8B")) +
+  theme_minimal()
+
+cor.test(diet_mb_adiv$diet_shannon, diet_mb_adiv$mb_shannon)
+
+
+## Observed 
+diet_mb_obs <- adiv_meta %>% 
+  select(sample_id, community, season, Observed) %>% 
+  left_join(adiv_meta_diet, by = c("sample_id" = 'Sample ID')) %>% 
+  select(sample_id, `Metabarcoding Sample ID`, community, season.x, Observed.x, Observed.y) %>% 
+  rename(mb_ob = Observed.x) %>% 
+  rename(diet_ob = Observed.y) %>% 
+  rename(season = season.x)
+
+diet_mb_obs %>% 
+  ggplot(aes(x = diet_ob, y = mb_ob, color = community, shape = season)) +
+  geom_jitter(height = 0.4, width = 0.4) + 
+  geom_smooth(method='lm', formula= y~x, se = FALSE, aes(group = 1), color = 'black') +
+  labs(x = "Observed Dietary Richness",
+       y = "Observed Microbiome Richness",
+       title = "Dietary vs Microbiome Richness",
+       color = "Community",
+       shape = "Rain Season") +
+  scale_color_manual(values = c("#F3722C", "#43AA8B")) +
+  theme_minimal()
+
+cor.test(diet_mb_obs$diet_ob, diet_mb_obs$mb_ob)
+
+
+## Inv Simpson
+diet_mb_is <- adiv_meta %>% 
+  select(sample_id, community, season, InvSimpson) %>% 
+  left_join(adiv_meta_diet, by = c("sample_id" = 'Sample ID')) %>% 
+  select(sample_id, `Metabarcoding Sample ID`, community, season.x, InvSimpson.x, InvSimpson.y) %>% 
+  rename(mb_is = InvSimpson.x) %>% 
+  rename(diet_is = InvSimpson.y) %>% 
+  rename(season = season.x)
+
+diet_mb_is %>% 
+  ggplot(aes(x = diet_is, y = mb_is, color = community, shape = season)) +
+  geom_jitter(height = 0.4, width = 0.4) + 
+  geom_smooth(method='lm', formula= y~x, se = FALSE, aes(group = 1), color = 'black') +
+  labs(x = "Dietary Alpha Diversity (InvSimpson)",
+       y = "Microbiome Alpha Diversity (InvSimpson)",
+       title = "Dietary vs Microbiome Alpha Diversity (InvSimpson)",
+       color = "Community",
+       shape = "Rain Season") +
+  scale_color_manual(values = c("#F3722C", "#43AA8B")) +
+  theme_minimal()
+
+cor.test(diet_mb_is$diet_is, diet_mb_is$mb_is)
+
+
+# diet observed vs mb shannon (and vice versa)
+diet_mb_adiv <- diet_mb_adiv %>% 
+  left_join(diet_mb_obs, by = c("sample_id", "Metabarcoding Sample ID", "community", "season"))
+
+diet_mb_adiv %>% 
+  ggplot(aes(x = diet_ob, y = mb_shannon)) +
+  geom_jitter(height = 0.4, width = 0.4) + 
+  geom_smooth(method='lm', formula= y~x, se = FALSE) +
+  labs(x = "Diet Richness",
+       y = "Microbiome Diversity (Shannon Index)",
+       title = "Dietary vs Microbiome Alpha Diversity") +
+  scale_color_manual(values = c("#F3722C", "#43AA8B")) +
+  theme_minimal()
+
+cor.test(diet_mb_adiv$diet_ob, diet_mb_adiv$mb_shannon)
+
+diet_mb_adiv %>% 
+  ggplot(aes(x = diet_shannon, y = mb_ob)) +
+  geom_jitter(height = 0.4, width = 0.4) + 
+  geom_smooth(method='lm', formula= y~x, se = FALSE) +
+  labs(x = "Diet Diversity (Shannon Index)",
+       y = "Microbiome Richness",
+       title = "Dietary vs Microbiome Alpha Diversity") +
+  scale_color_manual(values = c("#F3722C", "#43AA8B")) +
+  theme_minimal()
+
+cor.test(diet_mb_adiv$diet_shannon, diet_mb_adiv$mb_ob)
+
+```
+
+```{r combo box plots - season}
+## diet diversity (shan)
+# stats
+dryK_shan_diet <- adiv_meta_diet %>% 
+  filter(season == "dry") %>%
+  filter(Community == 'Kanyawara') %>% 
+  select(`Metabarcoding Sample ID`, Shannon)
+
+wetK_shan_diet <- adiv_meta_diet %>% 
+  filter(season == "wet") %>%
+  filter(Community == 'Kanyawara') %>% 
+  select(`Metabarcoding Sample ID`, Shannon)
+
+dryN_shan_diet <- adiv_meta_diet %>% 
+  filter(season == "dry") %>%
+  filter(Community == 'Ngogo') %>% 
+  select(`Metabarcoding Sample ID`, Shannon)
+
+wetN_shan_diet <- adiv_meta_diet %>% 
+  filter(season == "wet") %>%
+  filter(Community == 'Ngogo') %>% 
+  select(`Metabarcoding Sample ID`, Shannon)
+
+t.test(dryK_shan_diet["Shannon"], wetK_shan_diet["Shannon"]) # 0.072
+t.test(dryK_shan_diet["Shannon"], dryN_shan_diet["Shannon"]) # 0.323
+t.test(wetK_shan_diet["Shannon"], wetN_shan_diet["Shannon"]) # 0.028
+t.test(dryN_shan_diet["Shannon"], wetN_shan_diet["Shannon"]) # 0.184
+
+ddiv_shan <- aov(diet_shannon ~ season * community, data = diet_mb_adiv)
+summary(ddiv_shan)
+TukeyHSD(ddiv_shan)
+  # season not associated with significant differences in shannon, neither is community
+  # but relationship between shan and community is dependent on season
+  # nothing significant w Tukey
+
+# diet diversity (shan)
+diet_mb_adiv %>% 
+  ggplot(aes(x = factor(season, level=c("wet", "dry")), y = diet_shannon, color = community, fill = season)) +
+  geom_boxplot() +
+  facet_wrap(~community) +
+  labs(x = "Precipitation Season/Community",
+       y = "Diet Diversity (Shannon Index)",
+       title = "Dietary Diversity",
+       fill = "Precipitation Season",
+       color = "Community") +
+  scale_color_manual(values = c("#F3722C", "#43AA8B")) +
+  scale_fill_manual(values = c("#AE2012", "#0A9396")) +
+  theme_minimal()
+
+
+## mb diversity (shan)
+# stats
+dryK_shan_mb <- diet_mb_adiv %>% 
+  filter(season == "dry") %>%
+  filter(community == 'Kanyawara') %>% 
+  select(`Metabarcoding Sample ID`, mb_shannon)
+
+wetK_shan_mb <- diet_mb_adiv %>% 
+  filter(season == "wet") %>%
+  filter(community == 'Kanyawara') %>% 
+  select(`Metabarcoding Sample ID`, mb_shannon)
+
+dryN_shan_mb <- diet_mb_adiv %>% 
+  filter(season == "dry") %>%
+  filter(community == 'Ngogo') %>% 
+  select(`Metabarcoding Sample ID`, mb_shannon)
+
+wetN_shan_mb <- diet_mb_adiv %>% 
+  filter(season == "wet") %>%
+  filter(community == 'Ngogo') %>% 
+  select(`Metabarcoding Sample ID`, mb_shannon)
+
+t.test(dryK_shan_mb["mb_shannon"], wetK_shan_mb["mb_shannon"]) # 0.319
+t.test(dryK_shan_mb["mb_shannon"], dryN_shan_mb["mb_shannon"]) # 0.663
+t.test(wetK_shan_mb["mb_shannon"], wetN_shan_mb["mb_shannon"]) # 0.998
+t.test(dryN_shan_mb["mb_shannon"], wetN_shan_mb["mb_shannon"]) # 0.161
+
+mdiv_shan <- aov(mb_shannon ~ season * community, data = diet_mb_adiv)
+summary(mdiv_shan)
+TukeyHSD(mdiv_shan)
+  # nothing significant here -- shannon depends most on season 
+
+# mb diversity (shan)
+diet_mb_adiv %>% 
+  ggplot(aes(x = factor(season, level=c("wet", "dry")), y = mb_shannon, color = community, fill = season)) +
+  geom_boxplot() +
+  facet_wrap(~community) +
+  labs(x = "Precipitation Season/Community",
+       y = "Microbiome Diversity (Shannon Index)",
+       title = "Microbiome Diversity",
+       fill = "Precipitation Season",
+       color = "Comunity") +
+  scale_color_manual(values = c("#F3722C", "#43AA8B")) +
+  scale_fill_manual(values = c("#AE2012", "#0A9396")) +
+  theme_minimal()
+
+
+
+## diet diversity (obs)
+# stats
+dryK_obs_diet <- diet_mb_obs %>% 
+  filter(season == "dry") %>%
+  filter(community == 'Kanyawara') %>% 
+  select(`Metabarcoding Sample ID`, diet_ob)
+
+wetK_obs_diet <- diet_mb_obs %>% 
+  filter(season == "wet") %>%
+  filter(community == 'Kanyawara') %>% 
+  select(`Metabarcoding Sample ID`, diet_ob)
+
+dryN_obs_diet <- diet_mb_obs %>% 
+  filter(season == "dry") %>%
+  filter(community == 'Ngogo') %>% 
+  select(`Metabarcoding Sample ID`, diet_ob)
+
+wetN_obs_diet <- diet_mb_obs %>% 
+  filter(season == "wet") %>%
+  filter(community == 'Ngogo') %>% 
+  select(`Metabarcoding Sample ID`, diet_ob)
+
+t.test(dryK_obs_diet["diet_ob"], wetK_obs_diet["diet_ob"]) # 0.0003
+t.test(dryK_obs_diet["diet_ob"], dryN_obs_diet["diet_ob"]) # 0.286
+t.test(wetK_obs_diet["diet_ob"], wetN_obs_diet["diet_ob"]) # 0.009
+t.test(dryN_obs_diet["diet_ob"], wetN_obs_diet["diet_ob"]) # 0.766
+
+ddiv_obs <- aov(diet_ob ~ season * community, data = diet_mb_obs)
+summary(ddiv_obs)
+TukeyHSD(ddiv_obs)
+  # obs diet varies significantly by season and the way it changes by
+  # season depends on community 
+
+# plot
+data.segm<-data.frame(x="dry",y=32,xend="wet",yend=32,
+                      community="Kanyawara")
+data.segm2<-data.frame(x=1.5,y=33,
+                      community="Kanyawara")
+
+diet_mb_obs %>% 
+  ggplot(aes(x = factor(season, level=c("wet", "dry")), y = diet_ob, color = community, fill = season)) +
+  geom_boxplot() +
+  facet_wrap(~community) +
+  labs(x = "Precipitation Season/Community",
+       y = "Dietary Richness (Observed)",
+       title = "Dietary Richness",
+       fill = "Precipitation Season",
+       color = "Community") +
+  geom_segment(data=data.segm, aes(x = x, y = y, xend = xend, yend = yend), inherit.aes=FALSE) +
+  geom_text(data = data.segm2, label="**", aes(x=x, y=y), color = "black", inherit.aes=FALSE) + 
+  scale_color_manual(values = c("#F3722C", "#43AA8B")) +
+  scale_fill_manual(values = c("#AE2012", "#0A9396")) +
+  theme_minimal()
+
+
+## mb diversity (obs)
+# stats
+dryK_obs_mb <- diet_mb_obs %>% 
+  filter(season == "dry") %>%
+  filter(community == 'Kanyawara') %>% 
+  select(`Metabarcoding Sample ID`, mb_ob)
+
+wetK_obs_mb <- diet_mb_obs %>% 
+  filter(season == "wet") %>%
+  filter(community == 'Kanyawara') %>% 
+  select(`Metabarcoding Sample ID`, mb_ob)
+
+dryN_obs_mb <- diet_mb_obs %>% 
+  filter(season == "dry") %>%
+  filter(community == 'Ngogo') %>% 
+  select(`Metabarcoding Sample ID`, mb_ob)
+
+wetN_obs_mb <- diet_mb_obs %>% 
+  filter(season == "wet") %>%
+  filter(community == 'Ngogo') %>% 
+  select(`Metabarcoding Sample ID`, mb_ob)
+
+t.test(dryK_obs_mb["mb_ob"], wetK_obs_mb["mb_ob"]) # 0.223
+t.test(dryK_obs_mb["mb_ob"], dryN_obs_mb["mb_ob"]) # 0.936
+t.test(wetK_obs_mb["mb_ob"], wetN_obs_mb["mb_ob"]) # 0.005
+t.test(dryN_obs_mb["mb_ob"], wetN_obs_mb["mb_ob"]) # 0.151
+
+mdiv_obs <- aov(mb_ob ~ season * community, data = diet_mb_obs)
+summary(mdiv_obs)
+TukeyHSD(mdiv_obs)
+  # nothing significant -- but seasonxcommunity is close
+  # and wet vs wet is close (p = 0.05) but not sig
+
+# plot
+diet_mb_obs %>% 
+  ggplot(aes(x = factor(season, level=c("wet", "dry")), y = mb_ob, color = community, fill = season)) +
+  geom_boxplot() +
+  facet_wrap(~community) +
+  labs(x = "Rain Season/Community",
+       y = "Microbiome Richness (Observed)",
+       title = "Microbiome Richness",
+       color = "Community",
+       fill = "Precipitation Season") +
+  scale_color_manual(values = c("#F3722C", "#43AA8B")) +
+  scale_fill_manual(values = c("#AE2012", "#0A9396")) +
+  ylim(160,820) +
+  theme_minimal()
+
+
+
+# diet diversity (inv simp)
+diet_mb_is %>% 
+  ggplot(aes(x = season, y = diet_is, color = community, fill = season)) +
+  geom_boxplot() +
+  facet_wrap(~community) +
+  labs(x = "Rain Season/Community",
+       y = "InvSimpson",
+       title = "Dietary Diversity (InvSimpson)") +
+  scale_color_manual(values = c("#F3722C", "#43AA8B")) +
+  scale_fill_manual(values = c("#FBD9D6", "#D0FBFC")) +
+  theme_minimal()
+
+ddiv_is <- aov(diet_is ~ season * community, data = diet_mb_is)
+summary(ddiv_is)
+  # nothing significant
+
+# mb diversity (inv simp)
+diet_mb_is %>% 
+  ggplot(aes(x = season, y = mb_is, color = community, fill = season)) +
+  geom_boxplot() +
+  facet_wrap(~community) +
+  labs(x = "Rain Season/Community",
+       y = "InvSimpson",
+       title = "Microbiome Diversity (InvSimpson)") +
+  scale_color_manual(values = c("#F3722C", "#43AA8B")) +
+  scale_fill_manual(values = c("#FBD9D6", "#D0FBFC")) +
+  theme_minimal()
+
+mdiv_is <- aov(mb_is ~ season * community, data = diet_mb_is)
+summary(mdiv_is)
+  # nothing significant
+
+```
+
+```{r combo box plots - fruit season}
+
+diet_mb_fruitseason <- adiv_meta %>% 
+  select(sample_id, community, season, ripe_fruit_level, Observed, Shannon, InvSimpson) %>% 
+  left_join(adiv_meta_diet, by = c("sample_id" = 'Sample ID')) %>% 
+  select(sample_id, `Metabarcoding Sample ID`, community, season.x, ripe_fruit_level.x, 
+         InvSimpson.x, InvSimpson.y, Observed.x, Observed.y, Shannon.x, Shannon.y) %>% 
+  rename(mb_is = InvSimpson.x) %>% 
+  rename(diet_is = InvSimpson.y) %>% 
+  rename(mb_shannon = Shannon.x) %>% 
+  rename(diet_shannon = Shannon.y) %>% 
+  rename(mb_ob = Observed.x) %>% 
+  rename(diet_ob = Observed.y) %>% 
+  rename(fruit_season = ripe_fruit_level.x) %>% 
+  rename(season = season.x)
+
+## diet diversity (shan)
+# stats
+highK_shan_diet <- adiv_meta_diet %>% 
+  filter(ripe_fruit_level == "high fruit") %>%
+  filter(Community == 'Kanyawara') %>% 
+  select(`Metabarcoding Sample ID`, Shannon)
+
+lowK_shan_diet <- adiv_meta_diet %>% 
+  filter(ripe_fruit_level == "low fruit") %>%
+  filter(Community == 'Kanyawara') %>% 
+  select(`Metabarcoding Sample ID`, Shannon)
+
+highN_shan_diet <- adiv_meta_diet %>% 
+  filter(ripe_fruit_level == "high fruit") %>%
+  filter(Community == 'Ngogo') %>% 
+  select(`Metabarcoding Sample ID`, Shannon)
+
+lowN_shan_diet <- adiv_meta_diet %>% 
+  filter(ripe_fruit_level == "low fruit") %>%
+  filter(Community == 'Ngogo') %>% 
+  select(`Metabarcoding Sample ID`, Shannon)
+
+t.test(highK_shan_diet["Shannon"], lowK_shan_diet["Shannon"]) # 0.08224
+t.test(highK_shan_diet["Shannon"], highN_shan_diet["Shannon"]) # 0.5837
+t.test(lowK_shan_diet["Shannon"], lowN_shan_diet["Shannon"]) # 0.8374
+t.test(highN_shan_diet["Shannon"], lowN_shan_diet["Shannon"]) # 0.1348
+
+ddiv_shan_fs <- aov(diet_shannon ~ fruit_season * community, data = diet_mb_fruitseason)
+summary(ddiv_shan_fs)
+TukeyHSD(ddiv_shan_fs) # nothing sig here 
+  # diet shan signficantly affected by fruit season (not community or interaction)
+
+# plot
+diet_mb_fruitseason %>% 
+  ggplot(aes(x = fruit_season, y = diet_shannon, color = community, fill = fruit_season)) +
+  geom_boxplot() +
+  facet_wrap(~community) +
+  labs(x = "Fruit Season/Community",
+       y = "Diet Diversity (Shannon Index)",
+       title = "Dietary Diversity by Fruit Season",
+       fill = "Fruit Season",
+       color = "Community") +
+  scale_color_manual(values = c("#F3722C", "#43AA8B")) +
+  scale_fill_manual(values = c("#F9844A", "#277DA1")) +
+  theme_minimal()
+
+
+
+## mb diversity (shan)
+# stats
+highK_shan_mb <- diet_mb_fruitseason %>% 
+  filter(fruit_season == "high fruit") %>%
+  filter(community == 'Kanyawara') %>% 
+  select(`Metabarcoding Sample ID`, mb_shannon)
+
+lowK_shan_mb <- diet_mb_fruitseason %>% 
+  filter(fruit_season == "low fruit") %>%
+  filter(community == 'Kanyawara') %>% 
+  select(`Metabarcoding Sample ID`, mb_shannon)
+
+highN_shan_mb <- diet_mb_fruitseason %>% 
+  filter(fruit_season == "high fruit") %>%
+  filter(community == 'Ngogo') %>% 
+  select(`Metabarcoding Sample ID`, mb_shannon)
+
+lowN_shan_mb <- diet_mb_fruitseason %>% 
+  filter(fruit_season == "low fruit") %>%
+  filter(community == 'Ngogo') %>% 
+  select(`Metabarcoding Sample ID`, mb_shannon)
+
+t.test(highK_shan_mb["mb_shannon"], lowK_shan_mb["mb_shannon"]) # 0.4103
+t.test(highK_shan_mb["mb_shannon"], highN_shan_mb["mb_shannon"]) # 0.6071
+t.test(lowK_shan_mb["mb_shannon"], lowN_shan_mb["mb_shannon"]) # 0.8951
+t.test(highN_shan_mb["mb_shannon"], lowN_shan_mb["mb_shannon"]) # 0.73
+
+mdiv_shan_fs <- aov(mb_shannon ~ fruit_season * community, data = diet_mb_fruitseason)
+summary(mdiv_shan_fs)
+TukeyHSD(mdiv_shan_fs)
+  # nothing significant
+
+# plot
+diet_mb_fruitseason %>% 
+  ggplot(aes(x = fruit_season, y = mb_shannon, color = community, fill = fruit_season)) +
+  geom_boxplot() +
+  facet_wrap(~community) +
+  labs(x = "Fruit Season/Community",
+       y = "Microbiome Diversity (Shannon Index)",
+       title = "Microbiome Diversity by Fruit Season",
+       fill = "Fruit Season",
+       color = "Community") +
+  scale_color_manual(values = c("#F3722C", "#43AA8B")) +
+  scale_fill_manual(values = c("#F9844A", "#277DA1")) +
+  theme_minimal()
+
+
+## diet diversity (obs)
+# stats
+highK_obs_diet <- diet_mb_fruitseason %>% 
+  filter(fruit_season == "high fruit") %>%
+  filter(community == 'Kanyawara') %>% 
+  select(`Metabarcoding Sample ID`, diet_ob)
+
+lowK_obs_diet <- diet_mb_fruitseason %>% 
+  filter(fruit_season == "low fruit") %>%
+  filter(community == 'Kanyawara') %>% 
+  select(`Metabarcoding Sample ID`, diet_ob)
+
+highN_obs_diet <- diet_mb_fruitseason %>% 
+  filter(fruit_season == "high fruit") %>%
+  filter(community == 'Ngogo') %>% 
+  select(`Metabarcoding Sample ID`, diet_ob)
+
+lowN_obs_diet <- diet_mb_fruitseason %>% 
+  filter(fruit_season == "low fruit") %>%
+  filter(community == 'Ngogo') %>% 
+  select(`Metabarcoding Sample ID`, diet_ob)
+
+t.test(highK_obs_diet["diet_ob"], lowK_obs_diet["diet_ob"]) # 0.005623
+t.test(highK_obs_diet["diet_ob"], highN_obs_diet["diet_ob"]) # 0.1746
+t.test(lowK_obs_diet["diet_ob"], lowN_obs_diet["diet_ob"]) # 0.576
+t.test(highN_obs_diet["diet_ob"], lowN_obs_diet["diet_ob"]) # 0.3821
+
+ddiv_obs_fs <- aov(diet_ob ~ fruit_season * community, data = diet_mb_fruitseason)
+summary(ddiv_obs_fs)
+TukeyHSD(ddiv_obs_fs)
+  # diet ob signficantly depends on fruit season -- not communtiy or interaction
+
+data.segm3<-data.frame(x="high-fruit",y=32,xend="low-fruit",yend=32,
+                      community="Kanyawara")
+data.segm4<-data.frame(x=1.5,y=33,
+                      community="Kanyawara")
+
+# plot
+diet_mb_fruitseason %>% 
+  ggplot(aes(x = fruit_season, y = diet_ob, color = community, fill = fruit_season)) +
+  geom_boxplot() +
+  facet_wrap(~community) +
+  labs(x = "Fruit Season/Community",
+       y = "Dietary Richness (Observed)",
+       title = "Dietary Richness by Fruit Season",
+       fill = "Fruit Season",
+       color = "Community") +
+  geom_segment(data=data.segm3, aes(x = x, y = y, xend = xend, yend = yend), inherit.aes=FALSE) +
+  geom_text(data = data.segm4, label="*", aes(x=x, y=y), color = "black", inherit.aes=FALSE) + 
+  scale_color_manual(values = c("#F3722C", "#43AA8B")) +
+  scale_fill_manual(values = c("#F9844A", "#277DA1")) +
+  theme_minimal()
+
+
+## mb diversity (obs)
+# stats
+highK_obs_mb <- diet_mb_fruitseason %>% 
+  filter(fruit_season == "high fruit") %>%
+  filter(community == 'Kanyawara') %>% 
+  select(`Metabarcoding Sample ID`, mb_ob)
+
+lowK_obs_mb <- diet_mb_fruitseason %>% 
+  filter(fruit_season == "low fruit") %>%
+  filter(community == 'Kanyawara') %>% 
+  select(`Metabarcoding Sample ID`, mb_ob)
+
+highN_obs_mb <- diet_mb_fruitseason %>% 
+  filter(fruit_season == "high fruit") %>%
+  filter(community == 'Ngogo') %>% 
+  select(`Metabarcoding Sample ID`, mb_ob)
+
+lowN_obs_mb <- diet_mb_fruitseason %>% 
+  filter(fruit_season == "low fruit") %>%
+  filter(community == 'Ngogo') %>% 
+  select(`Metabarcoding Sample ID`, mb_ob)
+
+t.test(highK_obs_mb["mb_ob"], lowK_obs_mb["mb_ob"]) # 0.6059
+t.test(highK_obs_mb["mb_ob"], highN_obs_mb["mb_ob"]) # 0.3513
+t.test(lowK_obs_mb["mb_ob"], lowN_obs_mb["mb_ob"]) # 0.1375
+t.test(highN_obs_mb["mb_ob"], lowN_obs_mb["mb_ob"]) # 0.1401
+
+mdiv_obs_fs <- aov(mb_ob ~ fruit_season * community, data = diet_mb_fruitseason)
+summary(mdiv_obs_fs)
+  # nothing significant (community is close)
+TukeyHSD(mdiv_obs_fs) # nothing sig
+
+# plot
+diet_mb_fruitseason %>% 
+  ggplot(aes(x = fruit_season, y = mb_ob, color = community, fill = fruit_season)) +
+  geom_boxplot() +
+  facet_wrap(~community) +
+  labs(x = "Fruit Season/Community",
+       y = "Microbiome Richness (Observed)",
+       title = "Microbiome Richness by Fruit Season",
+       fill = "Fruit Season",
+       color = "Community") +
+  scale_color_manual(values = c("#F3722C", "#43AA8B")) +
+  scale_fill_manual(values = c("#F9844A", "#277DA1")) +
+  theme_minimal()
+
+```
+
+```{r zarin data with alpha divserity}
+
+# count obs number of species eaten for each sample
+obs_species_counts <- count(community_counts_long, metabarcoding_sample_id) %>% 
+  rename(obs_count = n)
+
+# add species counts to larger data frame
+community_counts_adiv <- community_counts_long %>% 
+  group_by(metabarcoding_sample_id) %>% 
+  left_join(obs_species_counts, by = 'metabarcoding_sample_id')
+
+
+## SHANNON 
+community_counts_shan_mbc <- community_counts_48hrs %>% 
+  left_join(tofind_sampleids, by = c("Chimp_ID" = "chimpanzee_name", "Date" = "date")) %>% 
+  left_join(tofind_sampleids2, by = "sample_id") %>% 
+  ungroup() %>% 
+  select(-total_obs_scan, -sample_id, -Date, -Chimp_ID) %>% 
+  filter(is.na(metabarcoding_sample_id) == FALSE) %>% 
+  replace(is.na(.), 0)
+  
+community_counts_shan <- community_counts_shan_mbc %>% 
+  select(-metabarcoding_sample_id)
+
+# use vegan::diversity to look at shannon and inv simpson
+invsimp <- vegan::diversity(community_counts_shan, index="invsimpson")
+shans <- vegan::diversity(community_counts_shan, index="shannon")
+  # this gives the shannon index -- but it is based on minutes observed eating 
+  # each species (vs its relative read abundance for microbiome)
+  # MEC -- be sure to note this
+
+# make a dataframe of mbc ids and shannon index and inv simpson
+community_obs_adiv <- data.frame(community_counts_shan_mbc$metabarcoding_sample_id, shans, invsimp) %>% 
+  rename(metabarcoding_sample_id = community_counts_shan_mbc.metabarcoding_sample_id) %>% 
+  rename(obs_shannon = shans) %>% 
+  rename(obs_invsimp = invsimp)
+
+# one df with both shannon index and observed numbers from Zarin data
+# and then join in metabarcoding shannon and observed values
+obs_adiv <- obs_species_counts %>% 
+  left_join(community_obs_adiv, by = 'metabarcoding_sample_id') %>% 
+  left_join(adiv_meta_diet, by = c('metabarcoding_sample_id' = 'Metabarcoding Sample ID')) %>% 
+  select(metabarcoding_sample_id, obs_count, obs_shannon, obs_invsimp, Observed,
+         Shannon, InvSimpson, Community, Sex, season, ripe_fruit_level)
+
+
+## compare observed and metabarcoding alpha diversity!
+
+# shannon
+obs_adiv %>% 
+  ggplot(aes(x = obs_shannon, y = Shannon)) +
+  geom_jitter(height = 0.4, width = 0.4) + 
+  geom_smooth(method='lm', formula= y~x, se = FALSE) +
+  labs(x = "Observed Diet Diversity (Shannon Index)",
+       y = "Metabarcoding Diet Diversity (Shannon Index)",
+       title = "Observed vs Metabarcoding Alpha Diversity") +
+  theme_minimal()
+
+cor.test(obs_adiv$obs_shannon, obs_adiv$Shannon)
+
+# observerd
+obs_adiv %>% 
+  ggplot(aes(x = obs_count, y = Observed)) +
+  geom_jitter(height = 0.4, width = 0.4) + 
+  geom_smooth(method='lm', formula= y~x, se = FALSE) +
+  labs(x = "Observed Diet Richness",
+       y = "Metabarcoding Diet Richness",
+       title = "Observed vs Metabarcoding Dietary Richness") +
+  theme_minimal()
+
+cor.test(obs_adiv$obs_count, obs_adiv$Observed)
+
+# inv simpson
+obs_adiv %>% 
+  ggplot(aes(x = obs_invsimp, y = InvSimpson)) +
+  geom_jitter(height = 0.4, width = 0.4) + 
+  geom_smooth(method='lm', formula= y~x, se = FALSE) +
+  labs(x = "Observed Diet Diversity (InvSimpson)",
+       y = "Metabarcoding Diet Diversity (InvSimpson)",
+       title = "Observed vs Metabarcoding Alpha Diversity (InvSimpson)") +
+  theme_minimal()
+
+cor.test(obs_adiv$obs_invsimp, obs_adiv$InvSimpson)
+
+## only looking at one community/season
+# shannon
+x <- obs_adiv %>% 
+  filter(ripe_fruit_level == "high fruit") 
+
+x %>% 
+  ggplot(aes(x = obs_shannon, y = Shannon)) +
+  geom_jitter(height = 0.4, width = 0.4) + 
+  geom_smooth(method='lm', formula= y~x, se = FALSE) +
+  labs(x = "Observed Diet Diversity (Shannon Index)",
+       y = "Metabarcoding Diet Diversity (Shannon Index)",
+       title = "Observed vs Metabarcoding Alpha Diversity") +
+  theme_minimal()
+
+cor.test(x$obs_shannon, x$Shannon)
+
+# observerd
+y <- obs_adiv %>%
+  filter(ripe_fruit_level == "high fruit") 
+
+y %>% 
+  ggplot(aes(x = obs_count, y = Observed)) +
+  geom_jitter(height = 0.4, width = 0.4) + 
+  geom_smooth(method='lm', formula= y~x, se = FALSE) +
+  labs(x = "Observed Diet Richness",
+       y = "Metabarcoding Diet Richness",
+       title = "Observed vs Metabarcoding Dietary Richness") +
+  theme_minimal()
+
+cor.test(y$obs_count, y$Observed)
+
+```
+
+```{r micrbiome vs observed (zarin) diet}
+
+# join the focal adiv stats and the microbiome adiv stats
+focal_vs_mb <- obs_adiv %>% 
+  left_join(diet_mb_adiv, by = c('metabarcoding_sample_id' = 'Metabarcoding Sample ID')) %>% 
+  left_join(diet_mb_is, by = c('metabarcoding_sample_id' = 'Metabarcoding Sample ID')) %>% 
+  select(metabarcoding_sample_id, obs_count, obs_shannon, obs_invsimp, mb_ob, mb_shannon, mb_is)
+  
+
+# richness
+focal_vs_mb %>% 
+  ggplot(aes(x = obs_count, y = mb_ob)) +
+  geom_jitter(height = 0.4, width = 0.4) + 
+  geom_smooth(method='lm', formula= y~x, se = FALSE) +
+  labs(x = "Dietary Richness (Field Data)",
+       y = "Microbiome Richness",
+       title = "Observed Diet (Field Data) vs Microbiome Richness") +
+  scale_color_manual(values = c("#F3722C", "#43AA8B")) +
+  theme_minimal()
+
+cor.test(focal_vs_mb$obs_count, focal_vs_mb$mb_ob)
+
+# shannon
+focal_vs_mb %>% 
+  ggplot(aes(x = obs_shannon, y = mb_shannon)) +
+  geom_jitter(height = 0.4, width = 0.4) + 
+  geom_smooth(method='lm', formula= y~x, se = FALSE) +
+  labs(x = "Dietary Diversity (Shannon Index, Field Data)",
+       y = "Microbiome Diversity (Shannon Index)",
+       title = "Observed Diet (Field Data) vs Microbiome Diversity") +
+  scale_color_manual(values = c("#F3722C", "#43AA8B")) +
+  theme_minimal()
+
+cor.test(focal_vs_mb$obs_shannon, focal_vs_mb$mb_shannon)
+
+# invsimpson
+focal_vs_mb %>% 
+  ggplot(aes(x = obs_invsimp, y = mb_is)) +
+  geom_jitter(height = 0.4, width = 0.4) + 
+  geom_smooth(method='lm', formula= y~x, se = FALSE) +
+  labs(x = "Observed Dietary InvSimpson Alpha Div (Focal Data)",
+       y = "Microbiome Alpha Div (InvSimp)",
+       title = "Observed Diet (Field Data) vs Microbiome Alpha Diversity (InvSimpson)") +
+  scale_color_manual(values = c("#F3722C", "#43AA8B")) +
+  theme_minimal()
+
+cor.test(focal_vs_mb$obs_invsimp, focal_vs_mb$mb_is)
+
+
+
+## ORIGINAL PLOTS (metabarcoding diet not focal diet) WITH ONLY THESE SAMPLES
+filtered <- diet_mb_adiv %>% 
+  filter(`Metabarcoding Sample ID` %in% focal_vs_mb$metabarcoding_sample_id) 
+
+## Shannon
+filtered %>% 
+  ggplot(aes(x = diet_shannon, y = mb_shannon)) +
+  geom_jitter(height = 0.4, width = 0.4) + 
+  geom_smooth(method='lm', formula= y~x, se = FALSE) +
+  labs(x = "Diet Diversity (Shannon Index)",
+       y = "Microbiome Diversity (Shannon Index)",
+       title = "Metabarcoding Diet vs Microbiome Diversity (Filtered)") +
+  theme_minimal()
+
+cor.test(filtered$diet_shannon, filtered$mb_shannon)
+
+filtered2 <- diet_mb_obs %>% 
+  filter(`Metabarcoding Sample ID` %in% focal_vs_mb$metabarcoding_sample_id) 
+
+## Observed 
+filtered2 %>% 
+  ggplot(aes(x = diet_ob, y = mb_ob)) +
+  geom_jitter(height = 0.4, width = 0.4) + 
+  geom_smooth(method='lm', formula= y~x, se = FALSE) +
+  labs(x = "Dietary Richness",
+       y = "Microbiome Richness",
+       title = "Metabarcoding Diet vs Microbiome Richness (Filtered)") +
+  theme_minimal()
+
+cor.test(filtered2$diet_ob, filtered2$mb_ob)
+
+filtered3 <- diet_mb_is %>% 
+  filter(`Metabarcoding Sample ID` %in% focal_vs_mb$metabarcoding_sample_id) 
+
+## Inv Simpson
+filtered3 %>% 
+  ggplot(aes(x = diet_is, y = mb_is)) +
+  geom_jitter(height = 0.4, width = 0.4) + 
+  geom_smooth(method='lm', formula= y~x, se = FALSE) +
+  labs(x = "Diet Diversity (InvSimpson)",
+       y = "Microbiome Diversity (InvSimpson)",
+       title = "Dietary vs Microbiome Alpha Diversity (InvSimpson, Filtered)") +
+  theme_minimal()
+
+cor.test(filtered3$diet_is, filtered3$mb_is)
+
+```
+
+
+## Taxon Proportions and Species Counts
+
+```{r taxon proportions - mb}
+# Make a long-formatted ASV table
+asv_table_long <- asv_table_df %>% 
+  pivot_longer(cols = -ASV, names_to = "SampleID", values_to = "Read_counts") %>% 
+  filter(SampleID %in% meta_filtered$sample_id)
+    # filter the asv table for only those who are of interest to us
+
+# convert Read_counts for each sample to a proportion of reads (aka relative abundance)
+# sum of number of reads per samples
+asv_table_long_prop <- asv_table_long %>% 
+  # group by sample and sum reads
+  group_by(SampleID) %>% 
+  mutate(Sample_counts = sum(Read_counts)) %>%
+  # ungroup and divide read by total number of reads for that sample
+  ungroup() %>%
+  mutate(Relative_abundance = Read_counts / Sample_counts) %>%
+  select(-Sample_counts, -Read_counts)
+
+# join this with the taxonomy information for each ASV
+asv_table_long_wtaxa <- asv_table_long_prop %>% 
+  left_join(taxonomy_df, by = "ASV")
+
+# lets join this with our filtered metadata too
+asv_table_long_wtaxa_meta <- left_join(asv_table_long_wtaxa, meta_filtered, by = c("SampleID" = "sample_id"))
+
+# Add column for full taxonomic names in case individual taxon names are not unique (i.e. same genus name found in two different families)
+asv_table_long_wtaxa_meta = asv_table_long_wtaxa_meta %>%
+  mutate(Class_whole = paste0(Phylum, sep = "_", Class)) %>%
+  mutate(Order_whole = paste0(Class_whole, sep = "_", Order)) %>%
+  mutate(Family_whole = paste0(Order_whole, sep = "_", Family)) %>%
+  mutate(Genus_whole = paste0(Family_whole, sep = "_", Genus)) %>%
+  mutate(Species_whole = paste0(Genus_whole, sep = "_", Species))
+
+```
+
+```{r taxon proportions plot - mb}
+
+# Look at phylum level abundance - for relevant treatments
+phyla_means <- asv_table_long_wtaxa_meta %>%
+  group_by(SampleID, Phylum, community, sex, chimpanzee_name, age_group) %>%
+  dplyr::summarize(Relative_abundance = sum(Relative_abundance))
+
+# drop low abundance taxa - use a cutoff of 1% 
+cutoff = 0.01
+
+# list low abundance phyla 
+low_ab_taxa <- phyla_means %>% 
+  group_by(Phylum) %>%
+  dplyr::summarize(Relative_abundance = mean(Relative_abundance)) %>%
+  filter(Relative_abundance < cutoff)
+
+# Change the name of low abundance phyla to "Other (<1%)"
+phyla_means2 <- phyla_means %>% 
+  mutate(Phylum = if_else(Phylum %in% low_ab_taxa$Phylum, "Other (<1%)", as.character(Phylum))) %>%
+  group_by(SampleID, Phylum, community, sex, chimpanzee_name, age_group) %>%
+  dplyr::summarize(Relative_abundance = sum(Relative_abundance)) %>% 
+  filter(Phylum != 'NA')
+
+# plot the average sample composition of each group over time
+phyla_means2 %>%
+  ggplot(aes(x = sex, y = Relative_abundance, fill = Phylum)) +
+  stat_summary(geom = "bar", position = "stack") +
+  facet_wrap(~community) +
+  labs(x = "Community",
+       y = "Abundance",
+       title = "Relative Abundance of Microbiome Phyla For Different Chimp Communities",
+       color = " ") +
+  scale_color_brewer(palette = "Dark2") +
+  scale_fill_brewer(palette = "Pastel1") +
+  theme_minimal()
+
+```
+
+```{r taxon proportions - diet}
+# Make a long-formatted ASV table
+asv_table_long_diet <- asv_table_diet %>% 
+  mutate(ASV = rownames(asv_table_diet)) %>% 
+  pivot_longer(cols = -ASV, names_to = "SampleID", values_to = "Read_counts")
+
+# convert Read_counts for each sample to a proportion of reads (aka relative abundance)
+# by summing of number of reads per samples -- and then getting the proportion in each ASV
+asv_table_long_prop_diet <- asv_table_long_diet %>% 
+  # group by sample and sum reads
+  group_by(SampleID) %>% 
+  mutate(Sample_counts = sum(Read_counts)) %>%
+  # ungroup and divide read by total number of reads for that sample
+  ungroup() %>%
+  mutate(Relative_abundance = Read_counts / Sample_counts) %>%
+  select(-Sample_counts, -Read_counts)
+
+# join this with the taxonomy information for each ASV
+asv_table_long_wtaxa_diet <- asv_table_long_prop_diet %>% 
+  left_join(taxonomy_df_diet, by = "ASV")
+
+# lets join this with our filtered metadata too
+asv_table_long_wtaxa_meta_diet <- left_join(asv_table_long_wtaxa_diet, meta_diet, by = c("SampleID" = "Metabarcoding Sample ID"))
+
+# Add column for full taxonomic names in case individual taxon names are not unique (i.e. same genus name found in two different families)
+asv_table_long_wtaxa_meta_diet = asv_table_long_wtaxa_meta_diet %>%
+  mutate(Class_whole = paste0(Class)) %>%
+  mutate(Order_whole = paste0(Class_whole, sep = "_", Order)) %>%
+  mutate(Family_whole = paste0(Order_whole, sep = "_", Family)) %>%
+  mutate(Genus_whole = paste0(Family_whole, sep = "_", Genus)) %>%
+  mutate(Species_whole = paste0(Genus_whole, sep = "_", Species))
+
+```
+
+```{r taxon proportions plot - diet - family}
+
+# Look at family level abundance - for relevant treatments
+family_means_diet <- asv_table_long_wtaxa_meta_diet %>%
+  group_by(SampleID, Family, Community, Sex, `Age Group`) %>%
+  dplyr::summarize(Relative_abundance = sum(Relative_abundance))
+
+# drop low abundance families - use a cutoff of 0.5% 
+cutoff = 0.005
+
+# list low abundance families 
+low_ab_families <- family_means_diet %>% 
+  group_by(Family) %>%
+  dplyr::summarize(Relative_abundance = mean(Relative_abundance)) %>%
+  filter(Relative_abundance < cutoff)
+
+# Change the name of low abundance families to "Other (<1%)"
+family_means_diet2 <- family_means_diet %>% 
+  mutate(Family = if_else(Family %in% low_ab_families$Family, "Other (<0.5%)", as.character(Family))) %>%
+  group_by(SampleID, Family, Community, Sex, `Age Group`) %>%
+  dplyr::summarize(Relative_abundance = sum(Relative_abundance)) %>% 
+  filter(Family != 'NA')
+    # MEC -- this is why we aren't getting to 100% im p sure -- bc removing the NAs...
+
+# plot the average sample composition of each group over time
+family_means_diet2 %>%
+  ggplot(aes(x = Sex, y = Relative_abundance, fill = Family)) +
+  stat_summary(geom = "bar", position = "stack") +
+  facet_wrap(~Community) +
+  labs(x = "Community",
+       y = "Abundance",
+       title = "Relative Abundance of Plant Families For Different Chimp Communities",
+       color = " ") +
+  #scale_color_brewer(palette = "Dark2") +
+  #scale_fill_brewer(palette = "Pastel1") +
+  theme_minimal()
+
+```
+
+## NA ASVs
+```{r general NA analysis}
+
+# for adding community information 
+add_com <- meta_diet %>% 
+  select(`Metabarcoding Sample ID`, Community)
+
+# list the samples that had any reads for a NA ASV
+nas <- asv_table_diet %>% 
+  mutate(ASV = row.names(asv_table_diet)) %>% 
+  filter(ASV %in% na_ASVs) %>% 
+  pivot_longer(cols = -ASV, names_to = "SampleID", values_to = "Read_counts") %>% 
+  filter(Read_counts >0) %>% 
+  left_join(add_com, by = c("SampleID" =  "Metabarcoding Sample ID")) %>% 
+  arrange(SampleID)
+
+# filter for only the Ngogo samples with NA ASVs
+  # and count how many NA ASVs each sample hit to
+ngogo_nas <- nas %>% 
+  filter(Community == "Ngogo") %>% 
+  count(SampleID) %>% 
+  arrange(n) %>% 
+  left_join(adiv_diet, by = "SampleID") %>% 
+  select(SampleID, n, Observed) %>% 
+  mutate(perc_na_bysample = n/Observed) %>% 
+  arrange(perc_na_bysample) 
+# 158 samples with NAs
+
+# same but for kanyawara
+kan_nas <- nas %>% 
+  filter(Community == "Kanyawara") %>% 
+  count(SampleID) %>% 
+  left_join(adiv_diet, by = "SampleID") %>% 
+  select(SampleID, n, Observed) %>% 
+  mutate(perc_na_bysample = n/Observed) %>% 
+  arrange(perc_na_bysample) 
+# 172 samples with NAs
+  
+# get the total number of K and N samples
+numk_total <- add_com %>% 
+  filter(Community == "Kanyawara") %>% 
+  count(.)
+
+numn_total <- add_com %>% 
+  filter(Community == "Ngogo") %>% 
+  count(.)
+
+## percent K and N samples that had reads for any NA ASVß
+# num N ids with any reads for a NA ASV / num total N ids
+nrow(ngogo_nas)/numn_total # 91.9%
+
+# num K ids with any reads for a NA ASV / num total K ids 
+nrow(kan_nas)/numk_total # 82.7%
+
+# for any N or K id with NA ASV reads -- how many NA ASVs did they have on average
+mean(ngogo_nas$n) # 2.92
+mean(kan_nas$n) # 2.94
+
+# plotting the distribution of K and N samples that hit any NA ASVs and how many
+# NA ASVs each sample included -- raw count
+ggplot(data=ngogo_nas, aes(x=factor(SampleID, SampleID), y=n)) +
+  geom_bar(stat="identity", width=1, fill = 'gray45') + 
+  theme_classic() +
+  labs(x = "Ngogo Samples",
+       y = "Number of NA ASVs") +
+  ylim(0,12) +
+  theme(axis.text.x=element_blank(),
+        axis.ticks.x=element_blank()) 
+
+ggplot(data=kan_nas , aes(x=factor(SampleID, SampleID), y=n)) +
+  geom_bar(stat="identity", width=1, fill = 'gray20') + 
+  theme_classic() +
+  labs(x = "Kanyawara Samples",
+       y = "Number of NA ASVs") +
+  ylim(0,12) +
+  theme(axis.text.x=element_blank(),
+        axis.ticks.x=element_blank()) 
+
+# percent of ASVs detected in the sample that are NA ASVs
+ggplot(data=ngogo_nas, aes(x=factor(SampleID, SampleID), y=perc_na_bysample)) +
+  geom_bar(stat="identity", width=1, fill = 'gray45') + 
+  theme_classic() +
+  labs(x = "Ngogo Samples",
+       y = "Number of NA ASVs") +
+  ylim(0,0.7) +
+  theme(axis.text.x=element_blank(),
+        axis.ticks.x=element_blank()) 
+
+ggplot(data=kan_nas , aes(x=factor(SampleID, SampleID), y=perc_na_bysample)) +
+  geom_bar(stat="identity", width=1, fill = 'gray20') + 
+  theme_classic() +
+  labs(x = "Kanyawara Samples",
+       y = "Number of NA ASVs") +
+  ylim(0,0.7) +
+  theme(axis.text.x=element_blank(),
+        axis.ticks.x=element_blank()) 
+
+```
+
+```{r read counts}
+### NA read counts
+# sum of Ngogo reads that were of NA ASVs 
+ngogo_na_reads <- nas %>% 
+  filter(Community == "Ngogo") %>%
+  summarize(sum_reads = sum(Read_counts))
+# 149,703
+
+# sum of Kan reads that were of NA ASVs
+kan_na_reads <- nas %>% 
+  filter(Community == "Kanyawara") %>%
+  summarize(sum_reads = sum(Read_counts))
+# 79,150
+
+# total Ngogo read counts
+total_ngo_reads <- asv_table_long_diet %>% 
+  left_join(add_com, by = c("SampleID" =  "Metabarcoding Sample ID")) %>% 
+  filter(Community == "Ngogo") %>% 
+  summarize(sum_reads = sum(Read_counts))
+
+# total Kan read counts
+total_kan_reads <- asv_table_long_diet %>% 
+  left_join(add_com, by = c("SampleID" =  "Metabarcoding Sample ID")) %>% 
+  filter(Community == "Kanyawara") %>% 
+  summarize(sum_reads = sum(Read_counts))
+
+# percent N read counts that were to NA ASVs
+ngogo_na_reads/total_ngo_reads  # 3.2%
+
+# percent K read counts that were to NA ASVs
+kan_na_reads/total_kan_reads  # 1.3%
+
+
+## read count distributions
+
+# get the total number of reads for each sample 
+all_reads <- data.frame(asv_table_diet) %>% 
+  mutate(ASV = row.names(asv_table_diet)) %>% 
+  pivot_longer(cols = -ASV, names_to = "SampleID", values_to = "Read_counts") %>% 
+  filter(Read_counts >0) %>% 
+  left_join(add_com, by = c("SampleID" =  "Metabarcoding Sample ID")) %>% 
+  arrange(SampleID) %>% 
+  group_by(SampleID) %>% 
+  summarize(total_reads = sum(Read_counts)) 
+
+
+ngogo_nas_rc <- nas %>% 
+  filter(Community == "Ngogo")%>% 
+  group_by(SampleID) %>% 
+  summarize(na_reads = sum(Read_counts)) %>% 
+  left_join(all_reads, by = "SampleID") %>% 
+  mutate(perc_na_reads = na_reads/total_reads) %>% 
+  arrange(perc_na_reads)
+
+kan_nas_rc <- nas %>% 
+  filter(Community == "Kanyawara")%>% 
+  group_by(SampleID) %>% 
+  summarize(na_reads = sum(Read_counts)) %>% 
+  left_join(all_reads, by = "SampleID") %>% 
+  mutate(perc_na_reads = na_reads/total_reads) %>% 
+  arrange(perc_na_reads)
+
+# percent of each sample's total reads that are NA ASVs
+ggplot(data=ngogo_nas_rc, aes(x=factor(SampleID, SampleID), y=perc_na_reads)) +
+  geom_bar(stat="identity", width=1, fill = 'gray45') + 
+  theme_classic() +
+  labs(x = "Ngogo Samples",
+       y = "Proportion of Total Read Count Assigned to NA ASVs") +
+  ylim(0,0.4) + 
+  theme(axis.text.x=element_blank(),
+        axis.ticks.x=element_blank()) 
+
+ggplot(kan_nas_rc , aes(x=factor(SampleID, SampleID), y=perc_na_reads)) +
+  geom_bar(stat="identity", width=1, fill = 'gray20') + 
+  theme_classic() +
+  labs(x = "Kanyawara Samples",
+       y = "Proportion of Total Read Count Assigned to NA ASVs") +
+  ylim(0,0.4) + 
+  theme(axis.text.x=element_blank(),
+        axis.ticks.x=element_blank()) 
+
+# raw counts
+ggplot(data=ngogo_nas_rc, aes(x=factor(SampleID, SampleID), y=na_reads)) +
+  geom_bar(stat="identity", width=1, fill = 'gray45') + 
+  theme_classic() +
+  labs(x = "Ngogo Samples",
+       y = "Total Read Count of NA ASVs") +
+  ylim(0,10000) + 
+  theme(axis.text.x=element_blank(),
+        axis.ticks.x=element_blank()) 
+
+ggplot(kan_nas_rc , aes(x=factor(SampleID, SampleID), y=na_reads)) +
+  geom_bar(stat="identity", width=1, fill = 'gray20') + 
+  theme_classic() +
+  labs(x = "Kanyawara Samples",
+       y = "Total Read Count of NA ASVs") +
+  ylim(0,10000) + 
+  theme(axis.text.x=element_blank(),
+        axis.ticks.x=element_blank()) 
+
+```
+
+```{r ttest - perc NA for K and N samples}
+
+ngogo_nas_rc <- ngogo_nas_rc %>% 
+  mutate(community = "Ngogo")
+kan_nas_rc <- kan_nas_rc%>% 
+  mutate(community = "Kanyawara")
+
+kandn_nas_rc <- rbind(ngogo_nas_rc, kan_nas_rc)
+
+kandn_perc_nas <- meta_diet %>% 
+  select(`Metabarcoding Sample ID`, Community) %>% 
+  left_join(kandn_nas_rc, by = c("Metabarcoding Sample ID" = "SampleID", 
+                              "Community" = "community")) %>% 
+  replace(is.na(.),0)
+
+## t-test between N and K NAs
+K_percna <- kandn_perc_nas %>% 
+  filter(Community == "Kanyawara") %>%
+  select(`Metabarcoding Sample ID`, perc_na_reads)
+
+N_percna <- kandn_perc_nas %>% 
+  filter(Community == "Ngogo")%>%
+  select(`Metabarcoding Sample ID`, perc_na_reads)
+
+t.test(K_percna["perc_na_reads"], N_percna["perc_na_reads"])
+
+
+## t-test between N and K NAs - no zeros
+K_percna_noz <- kandn_nas_rc %>% 
+  filter(community == "Kanyawara") %>%
+  select(SampleID, perc_na_reads)
+
+N_percna_noz <- kandn_nas_rc %>% 
+  filter(community == "Ngogo")%>%
+  select(SampleID, perc_na_reads)
+
+t.test(K_percna_noz["perc_na_reads"], N_percna_noz["perc_na_reads"])
+
+```
+
+
+## ASV Read Count Proportions
+```{r read count proportions}
+
+# count of reads across all samples for each ASV
+# also percent of total reads that are associated with each ASV 
+asv_sums <- data.frame(rowSums(asv_table_diet)) %>%
+  rename(sum = rowSums.asv_table_diet.) %>% 
+  mutate(percent_of_readcounts = (./sum(asv_table_diet)*100)) %>% 
+  rownames_to_column() %>% 
+  arrange(sum)
+
+# get percents for all of the top 30 ASVs
+asv_sums_top30_prep <- data.frame(rowSums(asv_table_diet)) %>%
+  rename(sum = rowSums.asv_table_diet.) %>% 
+  mutate(percent_of_readcounts = (./sum(asv_table_diet)*100)) %>% 
+  rownames_to_column() %>% 
+  arrange(desc(sum)) %>% 
+  mutate(count = 1:406)
+
+# get percent for the sum of all ASVs after 30
+after_30 <- asv_sums_top30_prep %>% 
+  filter(count >= 30) %>% 
+  summarize(percent_of_readcounts = sum(percent_of_readcounts$sum), sum = sum(sum)) %>% 
+  mutate(rowname = 'All ASVs after 30') %>% 
+  mutate(count = "30+") %>% 
+  select(rowname, sum, percent_of_readcounts, count)
+
+# combine the last two table
+asv_sums_top30 <- asv_sums_top30_prep %>% 
+  filter(count < 30) %>% 
+  arrange(desc(percent_of_readcounts)) %>% 
+  rbind(after_30) %>% 
+  mutate(rowname = factor(rowname, rowname))
+
+# visualize
+ggplot(data=asv_sums_top30, aes(x=rowname, y=percent_of_readcounts$sum)) +
+  geom_bar(stat="identity") + 
+  labs(x = " ",
+       y = "Percent of Total Read Count") +
+  scale_x_discrete(limits = rev(levels(asv_sums_top30$rowname))) + 
+  coord_flip() +
+  theme_classic() 
+
+# percent of reads assigned to NA AVS
+total_perc_na_asvs <- asv_sums %>% 
+  filter(rowname %in% na_ASVs) %>% 
+  summarize(total_perc = sum(percent_of_readcounts), sum = sum(sum))
+
+```
+
+
+## Focal Diet vs Metabarcoding Diet
+
+```{r focal data formatting}
+
+# helper tables 
+tofind_sampleids <- meta_filtered %>% 
+  mutate(date = as.Date(paste(day, month, year, sep = '-'), "%d-%m-%y")) %>% 
+  select(chimpanzee_name, date, sample_id)
+
+tofind_sampleids2 <- meta_diet %>% 
+  clean_names() %>% 
+  select(metabarcoding_sample_id, sample_id)
+
+# CHANGE DATA TO RIGHT SHAPE
+add_sample_ids <- community_counts_48hrs %>% 
+  ungroup() %>% 
+  left_join(tofind_sampleids, by = c("Chimp_ID" = "chimpanzee_name", "Date" = "date")) %>% 
+  filter(is.na(sample_id) == FALSE) %>% 
+    # drop the one row that had the wrong date (so has no sample id)
+  left_join(tofind_sampleids2, by = "sample_id")
+
+rownames(add_sample_ids) <- add_sample_ids$metabarcoding_sample_id
+colnames(add_sample_ids) <- sapply(str_split(colnames(add_sample_ids), " "), head, 1)
+
+reshape1 <- add_sample_ids %>% 
+  repair_names() %>% 
+  select(-Date, -Chimp_ID, -total_obs_scan, -sample_id, -metabarcoding_sample_id) %>% 
+  # combine all times eating the same plant just dif parts
+  replace(is.na(.), 0) %>%
+  rowwise() %>% 
+  mutate(CAF = sum(CAF, CAF1)) %>% 
+  mutate(COA = sum(COA, COA1)) %>% 
+  mutate(FCP = sum(FCP, FCP1)) %>% 
+  mutate(FDA = sum(FDA, FDA1)) %>% 
+  mutate(FEX = sum(FEX, FEX1, FEX2, FEX3)) %>% 
+  mutate(FNA = sum(FNA, FNA1)) %>% 
+  mutate(FVA = sum(FVA, FVA1)) %>% 
+  select(-CAF1, -COA1, -FCP1, -FDA1, -FEX1, -FEX2, -FEX3, -FNA1, -FVA1) 
+
+# add row sums 
+reshape1['total'] <- rowSums(reshape1)
+rownames(reshape1) <- add_sample_ids$metabarcoding_sample_id
+
+# change each entry to relative eating time 
+focal_for_comp <- reshape1 %>% 
+  mutate(across(ACA:UVA, ~ .x/total)) %>% 
+  select(-total)
+
+rownames(focal_for_comp) <- add_sample_ids$metabarcoding_sample_id
+
+```
+
+```{r metabarcoding 42}
+
+# taking a more manual approach -- going to find the ASV #s of the 42 plants from focal data
+
+# get gs and ASV num of species 
+gs <- taxonomy_df_diet %>% 
+  mutate(genus_species = paste(Genus, Species, sep = " ")) %>% 
+  select(genus_species, ASV)
+
+# get only the 42 plants and get their ASV number (by coding)
+asvs_42 <- plant_codes_tomerge %>%
+  filter(food_id %in% colnames(focal_for_comp)) %>% 
+  left_join(gs, by = "genus_species")
+
+# export by coding version, then do some manual editing
+write.csv(asvs_42, file='asvs_42.csv')
+
+# read in the manually edited version
+asvs_42_edited <- read.csv("asvs_42_edited.csv") %>% 
+  select(-X)
+
+# prepare table
+mbc_for_comp_42_1 <- asv_table_diet %>% 
+  filter(rownames(.) %in% asvs_42_edited$ASV) %>% 
+  mutate(asv = rownames(.)) %>% 
+  left_join(asvs_42_edited, by = c("asv" = "ASV")) %>% 
+  select(-asv, -genus_species) %>% 
+  # combine ASVs read counts that associate w the same plant
+  group_by(food_id) %>% 
+  summarise_each(list(sum)) %>% 
+  # select only the samples that have focal data
+  select(food_id, rownames(focal_for_comp)) %>% 
+  # bc a few of the 42 observed were not picked up by MBC, add these last few
+  # columns as 0s so the final dataframes are the same size
+  rbind(c("JAS", replicate(207, 0))) %>% 
+  rbind(c("LNC", replicate(207, 0))) %>% 
+  rbind(c("MDR", replicate(207, 0))) %>% 
+  rbind(c("RDC", replicate(207, 0))) %>% 
+  rbind(c("TTO", replicate(207, 0))) %>% 
+  rbind(c("UVA", replicate(207, 0)))
+
+# transpose
+mbc_for_comp_42_2 <- mbc_for_comp_42_1 %>% 
+  select(-food_id) %>% 
+  t(.) %>% 
+  data.frame(.)
+
+# make everything numeric and correct col and row names
+mbc_for_comp_42_3 <- sapply(mbc_for_comp_42_2,as.numeric)
+rownames(mbc_for_comp_42_3) <- rownames(mbc_for_comp_42_2)
+colnames(mbc_for_comp_42_3) <- mbc_for_comp_42_1$food_id 
+mbc_for_comp_42_3 <- data.frame(mbc_for_comp_42_3)
+
+# change each entry to relative read count
+mbc_for_comp_42_3['total'] <- rowSums(mbc_for_comp_42_3)
+
+mbc_for_comp_42_4 <- mbc_for_comp_42_3 %>% 
+  mutate(across(ACA:UVA, ~ .x/total)) %>% 
+  select(-total)
+  
+# sort columns alphabetically so they match focal_for_comp
+new_order = sort(colnames(mbc_for_comp_42_4))
+mbc_for_comp_42 <- mbc_for_comp_42_4 [, new_order]
+
+
+# LIST of plants that were either observed eaten or mbc eaten
+fortytwo_observed <- unique(asvs_42$food_id)
+fortytwo_inmbc <- unique(mbc_for_comp_42$food_id)
+
+# these are the plants to add as 0s to the mbc for comparison table
+  # they were observed but not found via MBC
+fortytwo_observed[!(fortytwo_observed %in% fortytwo_inmbc)]
+  
+
+```
+
+```{r unobserved and NA rows}
+
+## NA
+# list of all samples that had any NA reads (read count > 0 for any of the 149 NA ASVs)
+unique(nas$SampleID)
+  # need to add a 1 in mbc for comp for all samples in this list -- w name being NA
+
+## Unobserved
+unobserved <- data.frame(asv_table_diet) %>% 
+  mutate(ASV = row.names(asv_table_diet)) %>% 
+  filter(!(rownames(.) %in% asvs_42_edited$ASV)) %>% 
+  filter(!(rownames(.) %in% na_ASVs)) %>% 
+  pivot_longer(cols = -ASV, names_to = "SampleID", values_to = "Read_counts") %>% 
+  filter(Read_counts >0) %>% 
+  arrange(SampleID)
+
+# list of all samples that had any reads to an ASV that isn't NA and DOESN'T match 
+# an observed food (so samples that have metbarcoding data)
+unique(unobserved$SampleID)
+  # all samples!
+
+```
+
+```{r comparing 42 tables - mbc and observed}
+
+# Make 1/0 tables for weather a species was picked up at all via MBC 
+# or observation (of the 42 observed plants)
+onezero_mbc_for_comp_42 <- mbc_for_comp_42
+onezero_focal_for_comp <- focal_for_comp
+
+onezero_mbc_for_comp_42[onezero_mbc_for_comp_42 == 0] <- 0
+onezero_mbc_for_comp_42[onezero_mbc_for_comp_42 > 0] <- 1
+onezero_mbc_for_comp_42['sample'] <- rownames(mbc_for_comp_42)
+
+onezero_focal_for_comp[onezero_focal_for_comp == 0] <- 0
+onezero_focal_for_comp[onezero_focal_for_comp > 0] <- 2
+  # made this a 2 so that I can distinguish whether something was identified
+  # via focal or via mbc
+onezero_focal_for_comp['sample'] <- rownames(focal_for_comp)
+
+# add columns indicating if a sample had any NA ASVs (not in reference plants)
+# or unobserved plant species
+onezero_mbc_for_comp_42 <- onezero_mbc_for_comp_42 %>% 
+  mutate(Uknown = if_else(sample %in% unique(nas$SampleID), 1, 0)) %>% 
+  mutate(Unobserved = 1)
+    # saw above that all samples have some reads to an unobserved plant
+
+# add the same columns to focal data so we can combine tables, but set 
+# both to 0 
+onezero_focal_for_comp <- onezero_focal_for_comp %>% 
+  mutate(Uknown = 0) %>% 
+  mutate(Unobserved = 0)
+
+combo_table <- bind_rows(onezero_focal_for_comp, onezero_mbc_for_comp_42) %>%
+  group_by(sample) %>%
+  summarise_if(is.numeric, sum) %>% 
+  # drop one row that has NA values -- sample 146 idk why but not working 
+  drop_na()
+
+# melt table for visualization 
+melted_table <- melt(combo_table, id ='sample') %>% 
+  mutate(value = case_when(value == 0 ~ "Not detected",
+                           value == 1 ~ "Detected via metabarcoding only",
+                           value == 2 ~ "Recorded in field only",
+                           value == 3 ~ "Detected in both"))
+
+
+# visualize overlaps
+melted_table %>% 
+  ggplot(aes(sample,variable)) +    
+  geom_tile(aes(fill = value)) +
+  scale_fill_manual(values = c("#D00000", "#1b998b", "#D3D3D3", "#7d82b8")) +
+  labs(title = "Detection of Kanyawara Plants by Metbarcoding and Field Observation",
+       x = "Samples",
+       y = "Plant Code",
+       fill = " ") + 
+  theme(axis.text.x=element_blank(),
+        axis.ticks.x=element_blank()) 
+
+```
+
+```{r stats on 42 figure}
+
+# percent of all detected (in either category) that were detected in both
+detected <- melted_table %>% 
+  filter(value != "Not detected") 
+
+num_both <- detected %>% filter(value == "Detected in both") %>% nrow()
+
+num_both/nrow(detected) #14.9%
+
+# percent of mbc detected (mbc+both) that were also diet detected (both)
+mbc_both <- melted_table %>% 
+  filter(value == "Detected via metabarcoding only" | value == "Detected in both") 
+
+num_both/nrow(mbc_both) # 16.7%
+
+# percent of diet detected (diet+both) that were also mbc detected (both)
+diet_both <- melted_table %>% 
+  filter(value == "Recorded in field only" | value == "Detected in both") 
+
+num_both/nrow(diet_both) # 58.3%
+
+# top two species w highest fidelity (of the X number times this species
+# was detected in either cateogry, it was also detected in the other)
+plant_totals <- detected %>% 
+  group_by(variable) %>% 
+  mutate(plant_total = n()) 
+  
+species_fidelity <- detected %>% 
+  group_by(variable) %>% 
+  filter(value == "Detected in both") %>% 
+  mutate(both_total = n()) %>% 
+  left_join(plant_totals, by = "variable") %>% 
+  group_by(variable) %>% 
+  summarize(percent_both = both_total/plant_total) %>% 
+  ungroup() %>% 
+  distinct(variable, percent_both) %>% 
+  arrange(desc(percent_both))
+
+# top samples w highest fidelity 
+plant_totals_samp <- detected %>% 
+  group_by(sample) %>% 
+  mutate(plant_total = n()) 
+  
+sample_fidelity <- detected %>% 
+  group_by(sample) %>% 
+  filter(value == "Detected in both") %>% 
+  mutate(both_total = n()) %>% 
+  left_join(plant_totals_samp, by = "sample") %>% 
+  group_by(sample) %>% 
+  summarize(percent_both = both_total/plant_total) %>% 
+  ungroup() %>% 
+  distinct(sample, percent_both) %>% 
+  arrange(desc(percent_both))
+
+
+```
+
+
+```{r high abundance ASVs that are not observed}
+
+# top 3 not observed - ASV10 (Morus lactea), ASV11, 15, 54, 110 (Hibiscus sp.), ASV16 (Laportea aestuans)
+
+# ASV10
+asv10 <- asv_table_diet %>% 
+  t(.) %>% 
+  data.frame(.) %>% 
+  filter(ASV10 > 0)
+
+asv10_meta <- meta_diet %>% 
+  filter(`Metabarcoding Sample ID` %in% rownames(asv10))
+
+asv10_p1 <- asv10_meta %>% 
+  ggplot(aes(x = season, fill = season)) +
+  geom_bar() +
+  labs(title = "Precipitation Season Breakdown of Morus lactea Samples",
+       x = "Precipitation Season",
+       y = "Count",
+       fill = "Precipitation Season") +
+  scale_fill_manual(values = c("#AE2012", "#0A9396")) +
+  theme_minimal()
+
+asv10_p2 <- asv10_meta %>% 
+  ggplot(aes(x = ripe_fruit_level, fill = ripe_fruit_level)) +
+  geom_bar() +
+  labs(title = "Fruit Season Breakdown of Morus lactea Samples",
+       x = "Fruit Season",
+       y = "Count",
+       fill = "Fruit Season") +
+  scale_fill_manual(values = c("#F9844A", "#277DA1")) +
+  theme_minimal()
+
+asv10_p3 <- asv10_meta %>% 
+  ggplot(aes(x = Community, fill = Community)) +
+  geom_bar() +
+  labs(title = "Communities of Morus lactea Samples",
+       x = "Community",
+       y = "Count",
+       fill = "Community") +
+  scale_fill_manual(values = c("#F3722C", "#43AA8B")) +
+  theme_minimal()
+
+plot_grid(asv10_p1, asv10_p2, asv10_p3, labels = c('A', 'B', 'C'), label_size = 12, nrow = 1)
+
+# ASV11, 15, 54, 110 (Hibiscus sp.)
+asv11etc <- asv_table_diet %>% 
+  t(.) %>% 
+  data.frame(.) %>% 
+  filter(ASV11 > 0 | ASV15 > 0 | ASV54 > 0 | ASV110 > 0 )
+
+asv11etc_meta <- meta_diet %>% 
+  filter(`Metabarcoding Sample ID` %in% rownames(asv11etc))
+
+asv11etc_p1 <- asv11etc_meta %>% 
+  ggplot(aes(x = season, fill = season)) +
+  geom_bar() +
+  labs(title = "Precipitation Season Breakdown of Hibiscus sp. Samples",
+       x = "Precipitation Season",
+       y = "Count",
+       fill = "Precipitation Season") +
+  scale_fill_manual(values = c("#AE2012", "#0A9396")) +
+  theme_minimal()
+
+asv11etc_p2 <- asv11etc_meta %>% 
+  ggplot(aes(x = ripe_fruit_level, fill = ripe_fruit_level)) +
+  geom_bar() +
+  labs(title = "Fruit Season Breakdown of Hibiscus sp. Samples",
+       x = "Fruit Season",
+       y = "Count",
+       fill = "Fruit Season") +
+  scale_fill_manual(values = c("#F9844A", "#277DA1")) +
+  theme_minimal()
+
+asv11etc_p3 <- asv11etc_meta %>% 
+  ggplot(aes(x = Community, fill = Community)) +
+  geom_bar() +
+  labs(title = "Communities of Hibiscus sp. Samples",
+       x = "Community",
+       y = "Count",
+       fill = "Community") +
+  scale_fill_manual(values = c("#F3722C", "#43AA8B")) +
+  theme_minimal()
+
+plot_grid(asv11etc_p1, asv11etc_p2, asv11etc_p3, labels = c('D', 'E', 'F'), label_size = 12, nrow = 1)
+
+
+# ASV16 (Laportea aestuans)
+asv16 <- asv_table_diet %>% 
+  t(.) %>% 
+  data.frame(.) %>% 
+  filter(ASV16 > 0)
+
+asv16_meta <- meta_diet %>% 
+  filter(`Metabarcoding Sample ID` %in% rownames(asv16))
+
+asv16_p1 <- asv16_meta %>% 
+  ggplot(aes(x = season, fill = season)) +
+  geom_bar() +
+  labs(title = "Precipitation Season Breakdown of Laportea aestuans Samples",
+       x = "Precipitation Season",
+       y = "Count",
+       fill = "Precipitation Season") +
+  scale_fill_manual(values = c("#AE2012", "#0A9396")) +
+  theme_minimal()
+
+asv16_p2 <- asv16_meta %>% 
+  ggplot(aes(x = ripe_fruit_level, fill = ripe_fruit_level)) +
+  geom_bar() +
+  labs(title = "Fruit Season Breakdown of Laportea aestuans Samples",
+       x = "Fruit Season",
+       y = "Count",
+       fill = "Fruit Season") +
+  scale_fill_manual(values = c("#F9844A", "#277DA1")) +
+  theme_minimal()
+
+asv16_p3 <- asv16_meta %>% 
+  ggplot(aes(x = Community, fill = Community)) +
+  geom_bar() +
+  labs(title = "Communities of Laportea aestuans Samples",
+       x = "Community",
+       y = "Count",
+       fill = "Community") +
+  scale_fill_manual(values = c("#F3722C", "#43AA8B")) +
+  theme_minimal()
+
+plot_grid(asv16_p1, asv16_p2, asv16_p3, labels = c('G', 'H', 'I'), label_size = 12, nrow = 1)
+
+```
+
+```{r high abundance ASVs that were minimally observed}
+
+# top 3 minimally observed - PTE - ASV5 and ASV251, LOW - ASV12, AFR - ASV20
+
+# PTE - ASV5 and ASV251 (Pterygota mildbraedii)
+asv5251 <- asv_table_diet %>% 
+  t(.) %>% 
+  data.frame(.) %>% 
+  filter(ASV5 > 0 | ASV251 > 0)
+
+asv5251_meta <- meta_diet %>% 
+  filter(`Metabarcoding Sample ID` %in% rownames(asv5251))
+
+asv5251_p1 <- asv5251_meta %>% 
+  ggplot(aes(x = season, fill = season)) +
+  geom_bar() +
+  labs(title = "Precipitation Season Breakdown of Pterygota mildbraedii Samples",
+       x = "Precipitation Season",
+       y = "Count",
+       fill = "Precipitation Season") +
+  scale_fill_manual(values = c("#AE2012", "#0A9396")) +
+  theme_minimal()
+
+asv5251_p2 <- asv5251_meta %>% 
+  ggplot(aes(x = ripe_fruit_level, fill = ripe_fruit_level)) +
+  geom_bar() +
+  labs(title = "Fruit Season Breakdown of Pterygota mildbraedii Samples",
+       x = "Fruit Season",
+       y = "Count",
+       fill = "Fruit Season") +
+  scale_fill_manual(values = c("#F9844A", "#277DA1")) +
+  theme_minimal()
+
+asv5251_p3 <- asv5251_meta %>% 
+  ggplot(aes(x = Community, fill = Community)) +
+  geom_bar() +
+  labs(title = "Communities of Pterygota mildbraedii Samples",
+       x = "Community",
+       y = "Count",
+       fill = "Community") +
+  scale_fill_manual(values = c("#F3722C", "#43AA8B")) +
+  theme_minimal()
+
+plot_grid(asv5251_p1, asv5251_p2, asv5251_p3, labels = c('A', 'B', 'C'), label_size = 12, nrow = 1)
+
+# LOW - ASV12 (Lepistemon owariensis)
+asv12 <- asv_table_diet %>% 
+  t(.) %>% 
+  data.frame(.) %>% 
+  filter(ASV12 > 0)
+
+asv12_meta <- meta_diet %>% 
+  filter(`Metabarcoding Sample ID` %in% rownames(asv12))
+
+asv12_p1 <- asv12_meta %>% 
+  ggplot(aes(x = season, fill = season)) +
+  geom_bar() +
+  labs(title = "Precipitation Season Breakdown of Lepistemon owariensis Samples",
+       x = "Precipitation Season",
+       y = "Count",
+       fill = "Precipitation Season") +
+  scale_fill_manual(values = c("#AE2012", "#0A9396")) +
+  theme_minimal()
+
+asv12_p2 <- asv12_meta %>% 
+  ggplot(aes(x = ripe_fruit_level, fill = ripe_fruit_level)) +
+  geom_bar() +
+  labs(title = "Fruit Season Breakdown of Lepistemon owariensis Samples",
+       x = "Fruit Season",
+       y = "Count",
+       fill = "Fruit Season") +
+  scale_fill_manual(values = c("#F9844A", "#277DA1")) +
+  theme_minimal()
+
+asv12_p3 <- asv12_meta %>% 
+  ggplot(aes(x = Community, fill = Community)) +
+  geom_bar() +
+  labs(title = "Communities of Lepistemon owariensis Samples",
+       x = "Community",
+       y = "Count",
+       fill = "Community") +
+  scale_fill_manual(values = c("#F3722C", "#43AA8B")) +
+  theme_minimal()
+
+plot_grid(asv12_p1, asv12_p2, asv12_p3, labels = c('A', 'B', 'C'), label_size = 12, nrow = 1)
+
+# AFR - ASV20 (Aframomum sp.)
+asv20 <- asv_table_diet %>% 
+  t(.) %>% 
+  data.frame(.) %>% 
+  filter(ASV20 > 0)
+
+asv20_meta <- meta_diet %>% 
+  filter(`Metabarcoding Sample ID` %in% rownames(asv20))
+
+asv20_p1 <- asv20_meta %>% 
+  ggplot(aes(x = season, fill = season)) +
+  geom_bar() +
+  labs(title = "Precipitation Season Breakdown of Aframomum sp. Samples",
+       x = "Precipitation Season",
+       y = "Count",
+       fill = "Precipitation Season") +
+  scale_fill_manual(values = c("#AE2012", "#0A9396")) +
+  theme_minimal()
+
+asv20_p2 <- asv20_meta %>% 
+  ggplot(aes(x = ripe_fruit_level, fill = ripe_fruit_level)) +
+  geom_bar() +
+  labs(title = "Fruit Season Breakdown of Aframomum sp. Samples",
+       x = "Fruit Season",
+       y = "Count",
+       fill = "Fruit Season") +
+  scale_fill_manual(values = c("#F9844A", "#277DA1")) +
+  theme_minimal()
+
+asv20_p3 <- asv20_meta %>% 
+  ggplot(aes(x = Community, fill = Community)) +
+  geom_bar() +
+  labs(title = "Communities of Aframomum sp. Samples",
+       x = "Community",
+       y = "Count",
+       fill = "Community") +
+  scale_fill_manual(values = c("#F3722C", "#43AA8B")) +
+  theme_minimal()
+
+plot_grid(asv20_p1, asv20_p2, asv20_p3, labels = c('A', 'B', 'C'), label_size = 12, nrow = 1)
+
+```
+
+
+
+## Bray Curtis PCoAs
+
+```{r bray curtis - mb}
+## COMMUNITY 
+# subset phylo_all and meta for just our relevant treatment groups
+phylo <- subset_samples(phylo_all)
+meta_relevant = filter(meta_filtered)
+
+# calculate bray curtis distance matrix 
+dm_bc <- distance(phylo, method = "bray")
+
+# the ordinate command calculates distances & principal coordinates at once
+ord_bc = ordinate(phylo, method = "PCoA", distance = "bray") 
+
+# plot PCoA and bray curtis dists - community 
+plot_ordination(phylo, ord_bc, color = "community", axes = c(4,5)) +
+  scale_shape_manual(values = c(1,19)) +
+  scale_color_manual(values = c("#F3722C", "#43AA8B")) +
+  labs(title = "Bray Curtis Dissimilarities of Microbiome Composition by Community",
+       color = "Community") + 
+  theme_minimal()
+
+## SEX
+plot_ordination(phylo, ord_bc, color = "sex", axes = c(1,5)) +
+  scale_shape_manual(values = c(1,19)) +
+  scale_color_brewer(palette = "Accent") +
+  labs(title = "Bray Curtis Dissimilarities of Microbiome Composition by Sex",
+       color = "Sex") + 
+  theme_minimal()
+
+## Season
+plot_ordination(phylo, ord_bc, color = "season", axes = c(5,6)) +
+  scale_shape_manual(values = c(1,19)) +
+  scale_color_manual(values = c("#AE2012", "#0A9396")) +
+  labs(title = "Bray Curtis Dissimilarities of Microbiome Composition by Rain Season",
+       color = "Precipitation Season") + 
+  theme_minimal()
+
+## Fruit Season
+plot_ordination(phylo, ord_bc, color = "ripe_fruit_level", axes = c(5,13)) +
+  scale_shape_manual(values = c(1,19)) +
+  scale_color_manual(values = c("#F9844A", "#277DA1")) +
+  labs(title = "Bray Curtis Dissimilarities of Microbiome Composition by Fruit Season",
+       color = "Fruit Season") + 
+  theme_minimal()
+
+## STATS
+# Use the adonis test to determine whether the variable significantly 
+# affects gut microbial community structure. 
+mb_com <- adonis2(dm_bc ~ community, data = meta_relevant)
+  # p <0.001 no strata
+mb_sex <- adonis2(dm_bc ~ sex, data = meta_relevant)
+  # p <0.001 no strata
+mb_season <- adonis2(dm_bc ~ season, strata = meta_relevant$chimpanzee_number, data = meta_relevant)
+  # p < 0.001
+mb_fseason <- adonis2(dm_bc ~ ripe_fruit_level, strata = meta_relevant$chimpanzee_number, data = meta_relevant)
+  # p < 0.012
+
+```
+
+```{r bray curtis - diet}
+## COMMUNITY
+# subset phylo_all and meta for just our relevant treatment groups
+phylo_diet <- subset_samples(phylo_all_diet)
+metadiet_relevant = filter(meta_diet)
+
+# calculate bray curtis distance matrix 
+dm_bc_diet <- distance(phylo_diet, method = "bray")
+
+# the ordinate command calculates distances & principal coordinates at once
+ord_bc_diet = ordinate(phylo_diet, method = "PCoA", distance = "bray") 
+
+# Community 
+plot_ordination(phylo_diet, ord_bc_diet, color = "Community", axes = c(2,4)) +
+  scale_shape_manual(values = c(1,19)) +
+  scale_color_manual(values = c("#F3722C", "#43AA8B")) +
+  labs(title = "Bray Curtis Dissimilarities of Diet Composition by Community",
+       color = "Community") + 
+  theme_minimal()
+
+## SEX
+plot_ordination(phylo_diet, ord_bc_diet, color = "Sex", axes = c(8,10)) +
+  scale_shape_manual(values = c(1,19)) +
+  scale_color_brewer(palette = "Accent") +
+  labs(title = "Bray Curtis Dissimilarities of Diet Composition by Sex",
+       color = "Sex") + 
+  theme_minimal()
+
+## Season
+plot_ordination(phylo_diet, ord_bc_diet, color = "season", axes = c(2,3)) +
+  scale_shape_manual(values = c(1,19)) +
+  scale_color_manual(values = c("#AE2012", "#0A9396")) +
+  labs(title = "Bray Curtis Dissimilarities of Diet Composition by Rain Season",
+       color = "Rain Season") +
+  theme_minimal()
+
+## Fruit Season
+plot_ordination(phylo_diet, ord_bc_diet, color = "ripe_fruit_level", axes = c(1,3)) +
+  scale_shape_manual(values = c(1,19)) +
+  scale_color_manual(values = c("#F9844A", "#277DA1")) +
+  labs(title = "Bray Curtis Dissimilarities of Diet Composition by Fruit Season",
+       color = "Fruit Season") + 
+  theme_minimal()
+
+## STATS
+diet_com <- adonis2(dm_bc_diet ~ Community, data = metadiet_relevant) 
+  # p < 0.001 no strata
+diet_sex <- adonis2(dm_bc_diet ~ Sex, data = metadiet_relevant)
+  # p < 0.006 no strata
+diet_season <- adonis2(dm_bc_diet ~ season, strata = metadiet_relevant$`Chimp Name`, 
+                       data = metadiet_relevant)
+  # p < 0.001
+diet_fseason <- adonis2(dm_bc_diet ~ ripe_fruit_level,  
+                        strata = metadiet_relevant$`Chimp Name`, data = metadiet_relevant)
+  # p < 0.001
+
+# 380 spots in space, randoly assign them to a variable (community, sex, etc)
+  # does the actual season assignment show up less than expected (significantly different than random)
+  # randomly assigns 1000 times -- but strata means don't randomly assign this feature
+
+```
+
+```{r procrustes}
+
+# https://john-quensen.com/tutorials/procrustes-analysis/
+
+# run the procrustes on the two ordinations (generated from
+# bray curtis distances of samples based on mb and diet)
+pro <- procrustes(X = dm_bc, Y = dm_bc_diet, symmetric = FALSE)
+
+# run pro-test to use a permutational test to find the significance 
+# of the procrustes result
+  # based on the correlation from a symmetric Procrustes analysis
+protest(X = dm_bc, Y = dm_bc_diet, scores = "sites", permutations = 999)
+
+```
+
+
+## Mantel Tests
+```{r mantel tests}
+
+# MBC DIET VS MICROBIOME
+## make asv tables into matricies 
+# mb - select only samples that are in MBC
+CAnames <- meta_diet %>% 
+  select(`Metabarcoding Sample ID`, `Sample ID`)
+
+filt_asv_table <- data.frame(asv_table) %>% 
+  select(CAnames$`Sample ID`)
+
+colnames(filt_asv_table) <- CAnames$`Metabarcoding Sample ID`
+
+filt_asv_table <- filt_asv_table %>% t(.)
+
+asv_table_mb_mat <- as.matrix(filt_asv_table) 
+
+# mbc diet
+asv_table_diet <- asv_table_diet %>% t(.)
+asv_table_diet_mat <- as.matrix(asv_table_diet) 
+
+## normalize asv tables 
+asv_table_mb_mat_norm <- apply(asv_table_mb_mat,2,function(x){x/sum(x)}) 
+asv_table_diet_mat_norm <- apply(asv_table_diet_mat,2,function(x){x/sum(x)}) 
+
+# drop NAs from asv_table_mb_mat_norm -- Nas appear in ASV columns where 
+# no sample had any reads of this ASV
+asv_table_mb_mat_norm <- data.frame(asv_table_mb_mat_norm) %>% 
+  select_if(~ !any(is.na(.)))
+asv_table_mb_mat_norm <- as.matrix(asv_table_mb_mat_norm)
+
+# calculate distance matrices using differnt methods 
+  # jaccard for mb vs diet
+dist.jacc_mb = vegdist(asv_table_mb_mat_norm, method = "jaccard")
+dist.jacc_diet = vegdist(asv_table_diet_mat_norm, method = "jaccard")
+ 
+#run mantel permuatation test to determine if distances between samples are significantly correlated
+mb_diet_mantel <- mantel(dist.jacc_mb, dist.jacc_diet, method = "spearman", permutations = 9999, na.rm = TRUE)
+
+
+
+# OBSERVED DIET VS MICROBIOME
+
+# make into matrix (and drop na row)
+focal_norm <- focal_for_comp %>% 
+  rownames_to_column() %>% 
+  drop_na() %>% 
+  column_to_rownames('rowname')
+
+focal_mat_norm <- as.matrix(focal_norm)
+
+# filter for only the samples that have focal data, and make into matrix
+asv_table_mb_mat_norm_obs_filt <- data.frame(asv_table_mb_mat_norm) %>% 
+  rownames_to_column() %>% 
+  filter(rowname %in% rownames(focal_norm)) %>% 
+  column_to_rownames('rowname')
+
+asv_table_mb_mat_norm_obs_filt <- as.matrix(asv_table_mb_mat_norm_obs_filt)
+
+# calculate distance matrices using differnt methods 
+  # jaccard for mb vs diet
+dist.jacc_obs_diet = vegdist(focal_mat_norm, method = "jaccard")
+dist.jacc_mb_filtered = vegdist(asv_table_mb_mat_norm_obs_filt, method = "jaccard")
+
+mb_diet_mantel_obs <- mantel(dist.jacc_obs_diet, dist.jacc_mb_filtered, method = "spearman", permutations = 9999, na.rm = TRUE)
+
+```
+
+## Maaslin
+
+This section is based off Emily's code in Phyloseq_R.Rmd
+
+```{r format tables -- diet}
+
+##----------ORDER--------------
+# add the Order to each ASV
+abundances_with_order <- merge(asv_table_diet, taxonomy_diet["Order"], by="row.names", all=TRUE) %>% 
+  # drop rowname column so we can group and sum
+  select(-Row.names)
+
+# group by Order, sum other columns 
+order_abundances <- abundances_with_order %>% 
+  group_by(Order) %>% 
+  summarise_all(sum) %>%
+  column_to_rownames("Order") 
+
+#remove NA
+order_abundances_no_NA <- order_abundances[!(row.names(order_abundances) %in% c("NA")),]  
+
+# normalize
+order_abundances_norm <- apply(order_abundances,2,function(x){x/sum(x)}) 
+order_abundances_no_NA_norm <- apply(order_abundances_no_NA ,2,function(x){x/sum(x)}) 
+
+##----------FAMILY--------------
+# add Family to each ASV
+abundances_with_fam <- merge(asv_table_diet, taxonomy_diet["Family"], by="row.names", all=TRUE) %>% 
+  # drop rowname column so we can group and sum
+  select(-Row.names)
+
+# group by Order, sum other columns 
+fam_abundances <- abundances_with_fam %>% 
+  group_by(Family) %>% 
+  summarise_all(sum) %>%
+  column_to_rownames("Family") 
+
+# remove NA
+fam_abundances_no_NA <- fam_abundances[!(row.names(fam_abundances) %in% c("NA")),]  
+
+# normalize
+fam_abundances_norm <- apply(fam_abundances,2,function(x){x/sum(x)}) 
+fam_abundances_no_NA_norm <- apply(fam_abundances_no_NA ,2,function(x){x/sum(x)}) 
+
+##----------GENUS--------------
+# add Genus to each ASV
+abundances_with_genus <- merge(asv_table_diet, taxonomy_diet["Genus"], by="row.names", all=TRUE) %>% 
+  # drop rowname column so we can group and sum
+  select(-Row.names)
+
+# group by Order, sum other columns 
+genus_abundances <- abundances_with_genus %>% 
+  group_by(Genus) %>% 
+  summarise_all(sum) %>%
+  column_to_rownames("Genus") 
+
+# remove NA
+genus_abundances_no_NA <- genus_abundances[!(row.names(genus_abundances) %in% c("NA")),]  
+
+# normalize
+genus_abundances_norm <- apply(genus_abundances,2,function(x){x/sum(x)}) 
+genus_abundances_no_NA_norm <- apply(genus_abundances_no_NA ,2,function(x){x/sum(x)}) 
+
+##----------GENUS SPECIES--------------
+taxonomy_diet1 <- taxonomy_diet %>% 
+  mutate(genus_species = paste(Genus, Species, sep = " ")) %>% 
+  mutate(genus_species = ifelse(str_detect(genus_species, "NA") == TRUE, "NA", genus_species))
+
+# add genus sp to each ASV
+abundances_with_genussp <- merge(asv_table_diet, taxonomy_diet1["genus_species"], by="row.names", all=TRUE) %>% 
+  # drop rowname column so we can group and sum
+  select(-Row.names)
+
+# group by Order, sum other columns 
+genussp_abundances <- abundances_with_genussp %>% 
+  group_by(genus_species) %>% 
+  summarise_all(sum) %>%
+  column_to_rownames("genus_species") 
+
+# remove NA
+genussp_abundances_no_NA <- genussp_abundances[!(row.names(genussp_abundances) %in% c("NA")),]  
+
+# normalize
+genussp_abundances_norm <- apply(genussp_abundances,2,function(x){x/sum(x)}) 
+genussp_abundances_no_NA_norm <- apply(genussp_abundances_no_NA ,2,function(x){x/sum(x)}) 
+
+```
+
+```{r run Maaslin tests -- diet}
+
+# change column names 
+meta_diet1 <- meta_diet %>% 
+  rename(ChimpName = `Chimp Name`) %>% 
+  rename(Rain_Season = season) %>% 
+  rename(Fruit_Season = ripe_fruit_level) %>% 
+  column_to_rownames("Metabarcoding Sample ID") 
+
+# genus 
+genus_normalized = Maaslin2(
+    input_data = genus_abundances_norm, 
+    input_metadata = meta_diet1, 
+    output = "~/Desktop/genus_rel_abundances", 
+    fixed_effects = c("Community", "Rain_Season", "Fruit_Season"),
+    random_effects = c("Sex", "ChimpName"))
+
+# family
+family_normalized = Maaslin2(
+    input_data = fam_abundances_norm, 
+    input_metadata = meta_diet1, 
+    output = "~/Desktop/family_rel_abundances", 
+    fixed_effects = c("Community", "Rain_Season", "Fruit_Season"),
+    random_effects = c("Sex", "ChimpName"))
+
+# order
+order_normalized = Maaslin2(
+    input_data = order_abundances_norm, 
+    input_metadata = meta_diet1, 
+    output = "~/Desktop/order_rel_abundances", 
+    fixed_effects = c("Community", "Rain_Season", "Fruit_Season"),
+    random_effects = c("Sex", "ChimpName"))
+
+# genus species 
+genus_normalized = Maaslin2(
+    input_data = genussp_abundances_norm, 
+    input_metadata = meta_diet1, 
+    output = "~/Desktop/genus_sp_rel_abundances", 
+    fixed_effects = c("Community", "Rain_Season", "Fruit_Season"),
+    random_effects = c("Sex", "ChimpName"))
+
+```
+
+```{r format tables -- mb}
+
+filt_asv_table2 <- data.frame(asv_table) %>% 
+  select(CAnames$`Sample ID`)
+
+##----------PHYLUM--------------
+# add the Phylum to each ASV
+abundances_with_phylum <- merge(filt_asv_table2, taxonomy["Phylum"], by="row.names", all=TRUE) %>% 
+  # drop rowname column so we can group and sum
+  select(-Row.names)
+
+# group by Order, sum other columns 
+phylum_abundances <- abundances_with_phylum %>% 
+  group_by(Phylum) %>% 
+  summarise_all(sum) %>%
+  replace(is.na(.), "NA") %>%
+  column_to_rownames("Phylum") 
+
+#remove NA
+phylum_abundances_no_NA <- phylum_abundances[!(row.names(phylum_abundances) %in% c("NA")),]  
+
+# normalize
+phylum_abundances_norm <- apply(phylum_abundances,2,function(x){x/sum(x)}) 
+phylum_abundances_no_NA_norm <- apply(phylum_abundances_no_NA ,2,function(x){x/sum(x)}) 
+
+##----------ORDER--------------
+# add Family to each ASV
+abundances_with_order_mb <- merge(filt_asv_table2, taxonomy["Order"], by="row.names", all=TRUE) %>% 
+  # drop rowname column so we can group and sum
+  select(-Row.names)
+
+# group by Order, sum other columns 
+order_abundances_mb <- abundances_with_order_mb %>% 
+  group_by(Order) %>% 
+  summarise_all(sum) %>%
+  replace(is.na(.), "NA") %>%
+  column_to_rownames("Order") 
+
+# remove NA
+order_abundances_mb_no_NA <- order_abundances_mb[!(row.names(order_abundances_mb) %in% c("NA")),]  
+
+# normalize
+order_abundances_mb_norm <- apply(order_abundances_mb,2,function(x){x/sum(x)}) 
+order_abundances_mb_no_NA_norm <- apply(order_abundances_mb_no_NA ,2,function(x){x/sum(x)}) 
+
+##----------GENUS SPECIES--------------
+taxonomy1 <- taxonomy %>% 
+  mutate(genus_species = paste(Genus, Species, sep = " ")) %>% 
+  mutate(genus_species = ifelse(str_detect(genus_species, "NA") == TRUE, "NA", genus_species))
+
+# add genus sp to each ASV
+abundances_with_genussp_mb <- merge(filt_asv_table2, taxonomy1["genus_species"], by="row.names", all=TRUE) %>% 
+  # drop rowname column so we can group and sum
+  select(-Row.names)
+
+# group by Order, sum other columns 
+genussp_abundances_mb <- abundances_with_genussp_mb %>% 
+  group_by(genus_species) %>% 
+  summarise_all(sum) %>%
+  replace(is.na(.), "NA") %>%
+  column_to_rownames("genus_species") 
+
+# remove NA
+genussp_abundances_mb_no_NA <- genussp_abundances_mb[!(row.names(genussp_abundances_mb) %in% c("NA")),]  
+
+# normalize
+genussp_abundances_mb_norm <- apply(genussp_abundances_mb,2,function(x){x/sum(x)}) 
+genussp_abundances_mb_no_NA_norm <- apply(genussp_abundances_mb_no_NA ,2,function(x){x/sum(x)}) 
+
+```
+
+```{r run maaslin tests -- mb}
+
+# change column names 
+meta_filtered1 <- meta_filtered %>% 
+  rename(Community = community) %>% 
+  rename(Rain_Season = season) %>% 
+  rename(Fruit_Season = ripe_fruit_level) 
+
+# phylum
+phylum_normalized = Maaslin2(
+    input_data = phylum_abundances_norm, 
+    input_metadata = meta_filtered1, 
+    output = "~/Desktop/phylum_rel_abundances", 
+    fixed_effects = c("Community", "Rain_Season", "Fruit_Season"),
+    random_effects = c("sex", "chimpanzee_name"))
+
+# order
+order_normalized_mb = Maaslin2(
+    input_data = order_abundances_mb_norm, 
+    input_metadata = meta_filtered1, 
+    output = "~/Desktop/order_rel_abundances", 
+    fixed_effects = c("Community", "Rain_Season", "Fruit_Season"),
+    random_effects = c("sex", "chimpanzee_name"))
+
+# genus species 
+genussp_normalized_mb = Maaslin2(
+    input_data = genussp_abundances_mb_norm, 
+    input_metadata = meta_filtered1, 
+    output = "~/Desktop/genus_sp_rel_abundances", 
+    fixed_effects = c("Community", "Rain_Season", "Fruit_Season"),
+    random_effects = c("sex", "chimpanzee_name"))
+
+
+```
+
+```{r individual food maaslin -- formatting metadata}
+
+# make 3 new columns -- yes/no for if: 
+  # celtis africana (ASV 3), Pterygota mildbraedii (ASV 5 and ASV 251), Chaetacme aristata (many ASVs) are present
+
+mbc_by_foodid <- asv_table_diet %>% 
+  data.frame(.) %>% 
+  mutate(asv = rownames(.)) %>% 
+  left_join(asvs_42_edited, by = c("asv" = "ASV")) %>% 
+  select(-asv, -genus_species) %>% 
+  # combine ASVs read counts that associate w the same plant
+  group_by(food_id) %>% 
+  summarise_each(list(sum)) %>%
+  drop_na()
+
+prescence_of_top3 <- mbc_by_foodid %>% 
+  filter(food_id %in% c("CAF", "PTE", "CHT")) %>% 
+  column_to_rownames("food_id") %>% 
+  t(.) %>% 
+  data.frame(.) %>% 
+  rownames_to_column(var = "sample_id") %>% 
+  mutate(CAF_present = case_when(
+    CAF == 0 ~ "no", CAF > 0 ~ "yes")) %>% 
+  mutate(CHT_present = case_when(
+    CHT == 0 ~ "no", CHT > 0 ~ "yes")) %>% 
+  mutate(PTE_present = case_when(
+    PTE == 0 ~ "no", PTE > 0 ~ "yes")) %>% 
+  select(sample_id, CAF_present, CHT_present, PTE_present)
+
+meta_filtered2 <- meta_filtered1 %>%
+  left_join(tofind_sampleids2, by = "sample_id") %>% 
+  right_join(prescence_of_top3, by = c("metabarcoding_sample_id" = "sample_id")) %>% 
+  column_to_rownames("sample_id")
+  
+```
+
+```{r run maaslin tests -- mb, individual foods}
+
+# phylum
+phylum_normalized_individual_plants = Maaslin2(
+    input_data = phylum_abundances_norm, 
+    input_metadata = meta_filtered2, 
+    output = "~/Desktop/phylum_rel_abundances_indivplants", 
+    fixed_effects = c("CAF_present", "CHT_present", "PTE_present"),
+    random_effects = c("sex", "chimpanzee_name"))
+
+# genus species 
+genussp_normalized_mb_indivplants = Maaslin2(
+    input_data = genussp_abundances_mb_norm, 
+    input_metadata = meta_filtered2, 
+    output = "~/Desktop/genus_sp_rel_abundances_indivplants", 
+    fixed_effects = c("CAF_present", "CHT_present", "PTE_present"),
+    random_effects = c("sex", "chimpanzee_name"))
+
+
+```
+
+
+
+
