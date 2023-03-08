@@ -513,7 +513,6 @@ adiv_meta %>%
        y = "Shannon Index",
        title = "Microbiome Alpha Diversity by Fruit Season") +
   scale_fill_manual(values = c("#F9844A", "#277DA1")) +
-  #scale_fill_manual(values = c("#FDD3BE", "#A6D5E9")) +
   stat_compare_means(method = "t.test", label.x = 1.4) +
   theme_minimal()
 
@@ -525,7 +524,6 @@ adiv_meta %>%
        y = "Observed Richness",
        title = "Microbiome Richness by Fruit Season") +
   scale_fill_manual(values = c("#F9844A", "#277DA1")) +
-  # scale_fill_manual(values = c("#FDD3BE", "#A6D5E9")) +
   stat_compare_means(method = "t.test", label.x = 1.4) +
   theme_minimal()
 
@@ -543,22 +541,22 @@ adiv_meta %>%
   
 # t-tests for shannon diversity - fruit
 lf_shan_mb <- adiv_meta %>% 
-  filter(ripe_fruit_level == "low fruit") %>%
+  filter(ripe_fruit_level == "low-fruit") %>%
   select(sample_id, Shannon)
 
 hf_shan_mb <- adiv_meta %>% 
-  filter(ripe_fruit_level == "high fruit") %>%
+  filter(ripe_fruit_level == "high-fruit") %>%
   select(sample_id, Shannon)
 
 t.test(lf_shan_mb["Shannon"], hf_shan_mb["Shannon"])
 
 # t-tests for observed - fruit
 lf_ob_mb <- adiv_meta %>% 
-  filter(ripe_fruit_level == "low fruit") %>%
+  filter(ripe_fruit_level == "low-fruit") %>%
   select(sample_id, Observed)
 
 hf_ob_mb <- adiv_meta %>% 
-  filter(ripe_fruit_level == "high fruit")%>%
+  filter(ripe_fruit_level == "high-fruit")%>%
   select(sample_id, Observed)
 
 t.test(lf_ob_mb["Observed"], hf_ob_mb["Observed"])
@@ -736,22 +734,22 @@ adiv_meta_diet %>%
   
 # t-tests for shannon diversity - fruit
 lf_shan_diet <- adiv_meta_diet %>% 
-  filter(ripe_fruit_level == "low fruit") %>%
+  filter(ripe_fruit_level == "low-fruit") %>%
   select(`Metabarcoding Sample ID`, Shannon)
 
 hf_shan_diet <- adiv_meta_diet %>% 
-  filter(ripe_fruit_level == "high fruit") %>%
+  filter(ripe_fruit_level == "high-fruit") %>%
   select(`Metabarcoding Sample ID`, Shannon)
 
 t.test(lf_shan_diet["Shannon"], hf_shan_diet["Shannon"])
 
 # t-tests for observed - fruit
 lf_ob_diet <- adiv_meta_diet %>% 
-  filter(ripe_fruit_level == "low fruit") %>%
+  filter(ripe_fruit_level == "low-fruit") %>%
   select(`Metabarcoding Sample ID`, Observed)
 
 hf_ob_diet <- adiv_meta_diet %>% 
-  filter(ripe_fruit_level == "high fruit")%>%
+  filter(ripe_fruit_level == "high-fruit")%>%
   select(`Metabarcoding Sample ID`, Observed)
 
 t.test(lf_ob_diet["Observed"], hf_ob_diet["Observed"])
@@ -1411,7 +1409,7 @@ cor.test(obs_adiv$obs_invsimp, obs_adiv$InvSimpson)
 ## only looking at one community/season
 # shannon
 x <- obs_adiv %>% 
-  filter(ripe_fruit_level == "high fruit") 
+  filter(ripe_fruit_level == "high-fruit") 
 
 x %>% 
   ggplot(aes(x = obs_shannon, y = Shannon)) +
@@ -1426,7 +1424,7 @@ cor.test(x$obs_shannon, x$Shannon)
 
 # observerd
 y <- obs_adiv %>%
-  filter(ripe_fruit_level == "high fruit") 
+  filter(ripe_fruit_level == "high-fruit") 
 
 y %>% 
   ggplot(aes(x = obs_count, y = Observed)) +
@@ -2041,7 +2039,7 @@ rownames(focal_for_comp) <- add_sample_ids$metabarcoding_sample_id
 
 # taking a more manual approach -- going to find the ASV #s of the 42 plants from focal data
 
-# get gs and ASV num of species 
+# get genus-species and ASV num of species 
 gs <- taxonomy_df_diet %>% 
   mutate(genus_species = paste(Genus, Species, sep = " ")) %>% 
   select(genus_species, ASV)
@@ -2054,7 +2052,7 @@ asvs_42 <- plant_codes_tomerge %>%
 # export by coding version, then do some manual editing
 write.csv(asvs_42, file='asvs_42.csv')
 
-# read in the manually edited version
+# read in the manually edited version (manually edited in excel)
 asvs_42_edited <- read.csv("asvs_42_edited.csv") %>% 
   select(-X)
 
@@ -2204,6 +2202,12 @@ num_both <- detected %>% filter(value == "Detected in both") %>% nrow()
 
 num_both/nrow(detected) #14.9%
 
+## ***percent detected in both (counting not detected as a 'both')
+detect_including_not <- melted_table %>% 
+  filter(value %in% c("Not detected", "Detected in both")) 
+
+nrow(detect_including_not)/nrow(melted_table) # 64.0%
+
 # percent of mbc detected (mbc+both) that were also diet detected (both)
 mbc_both <- melted_table %>% 
   filter(value == "Detected via metabarcoding only" | value == "Detected in both") 
@@ -2255,7 +2259,10 @@ sample_fidelity <- detected %>%
 
 ```{r high abundance ASVs that are not observed}
 
-# top 3 not observed - ASV10 (Morus lactea), ASV11, 15, 54, 110 (Hibiscus sp.), ASV16 (Laportea aestuans)
+# top 3 not observed - ASV10 (Morus lactea), ASV11, 15, 54, 110 (Hibiscus sp.),
+# ASV16 (Laportea aestuans)
+# plot the split of samples with this ASV by community, fruit season, 
+  # and precipitation season
 
 # ASV10
 asv10 <- asv_table_diet %>% 
@@ -2386,6 +2393,8 @@ plot_grid(asv16_p1, asv16_p2, asv16_p3, labels = c('G', 'H', 'I'), label_size = 
 ```{r high abundance ASVs that were minimally observed}
 
 # top 3 minimally observed - PTE - ASV5 and ASV251, LOW - ASV12, AFR - ASV20
+# plot the split of samples with these ASVs by community, fruit season, 
+  # and precipitation season
 
 # PTE - ASV5 and ASV251 (Pterygota mildbraedii)
 asv5251 <- asv_table_diet %>% 
