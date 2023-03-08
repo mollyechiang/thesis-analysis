@@ -1671,7 +1671,6 @@ family_means_diet2 <- family_means_diet %>%
   group_by(SampleID, Family, Community, Sex, `Age Group`) %>%
   dplyr::summarize(Relative_abundance = sum(Relative_abundance)) %>% 
   filter(Family != 'NA')
-    # MEC -- this is why we aren't getting to 100% im p sure -- bc removing the NAs...
 
 # plot the average sample composition of each group over time
 family_means_diet2 %>%
