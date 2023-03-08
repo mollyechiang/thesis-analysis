@@ -32,15 +32,12 @@ library(tidyverse)
 
 # COLORS:
 # community:
-# scale_color_manual(values = c("#F3722C", "#43AA8B")) +
 # scale_fill_manual(values = c("#F7A477", "#80CDB6")) +
 
 # season: 
-# scale_color_manual(values = c("#AE2012", "#0A9396")) +
 # scale_fill_manual(values = c("#FBD9D6", "#D0FBFC")) +
 
 # fruit season:
-# scale_color_manual(values = c("#F9844A", "#277DA1")) +
 # scale_fill_manual(values = c("#FDD3BE", "#A6D5E9")) +
 
 ```
@@ -49,14 +46,12 @@ library(tidyverse)
 
 ```{r read data}
 
-# setwd("~/Desktop/theis/R")
-
-### MB section
 # read meta data
 meta_mb <- read_q2metadata("metadata/merged_map.txt")
 meta_mb2 <- read_xlsx("metadata/1-s2.0-S0960982220316523-mmc3.xlsx")
 meta_fecal <- read_xlsx("metadata/MollyMetabarcoding-Metadata-Updated.xlsx")
 
+# select relevant columns
 meta <- meta_mb %>% 
   left_join(meta_mb2, by = c("SampleID" = "Sample ID")) %>% 
   select(-Primer_Well, - Primer_ID, -Primer_Plate, -YearChange, -YearChange_age_transition, 
@@ -67,6 +62,8 @@ meta <- meta_mb %>%
         age, age_group, sample_collection_date, month, day, year, year_quarter,
         x16s_copies_per_g_feces, features_per_sample, shannon_index, observed_ot_us)
 
+# read in metadata from diet data (drop 2 mislabeled sequences)
+  # and add dry and wet season column
 meta_diet <- read_xlsx('metadata/MollyMetabarcoding-Metadata-Updated.xlsx') %>% 
   filter(`Metabarcoding Sample ID` != 'MMBC359') %>% 
   filter(`Metabarcoding Sample ID` != 'MMBC382') %>% 
@@ -84,8 +81,6 @@ taxonomy <- read_qza("taxonomy.qza")$data %>%
 # asv phylogeny - mb samples
 tree <- read_qza("rooted-tree.qza")$data
 
-
-### Diet section
 # diet sample ASV names
 asv_names <- sprintf("ASV%d",seq(1:406))
 
@@ -155,10 +150,12 @@ sample_counts_48hrs <- rbind(sample_counts_day2, sample_counts_day1) %>%
   summarise_each(list(sum)) %>% 
   na_if(., 0)
 
+# read in plant foods and ripe fruit information
 plant_codes <- read_xlsx("Zarin Data/Plant Food Codes.xlsx")
 
 ripe_fruit <- read_xlsx("Zarin Data/ripe fruit by month.xlsx") 
 
+# determine which months are high- and low-fruit
 ripe_fruit <- ripe_fruit%>% 
   mutate(ripe_fruit_level = case_when(
     perc_diet_RF >= mean(ripe_fruit$perc_diet_RF) ~ "high-fruit",
@@ -195,8 +192,7 @@ meta_diet <- meta_diet %>%
 ## Data Prep -- create phyloseq object, Zarin data cleaning
 
 ```{r create phyloseq experimental object - mb data}
-# first, create a phyloseq-formatted metadata table (i.e. "sample data")
-# note that need to give it a metadata with sample IDs as rownames, NOT an individual column, so we'll do that first
+# first, create a phyloseq-formatted metadata table 
 rownames(meta_filtered) = meta_filtered$sample_id
 phylo_meta = sample_data(meta_filtered)
 
@@ -242,6 +238,7 @@ taxonomy_df_diet <- taxonomy_diet %>%
 
 rownames(taxonomy_df_diet) = NULL
 
+# create a list of the NA ASVs
 na_ASVs <- taxonomy_df_diet %>% 
   filter(Domain == "NA") %>% 
   select(ASV) 
@@ -304,6 +301,7 @@ sample_counts_long <- sample_counts_48hrs %>%
   left_join(plant_codes_tomerge, by = "food_id")
 # 32 species observed 
 
+# create a list of the 42 plants ever observed in the community scans
 plant_codes_observed <- plant_codes_tomerge %>% 
   filter(food_id %in% unique(community_counts_long$food_id))
 
@@ -370,11 +368,7 @@ meta_filtered %>%
 # Age means 
 mean(meta_filtered$chimpanzee_age)
 median(meta_filtered$chimpanzee_age)
-median(meta_diet$Age)
-mean(meta_diet$Age)
 sd(meta_filtered$chimpanzee_age)
-sd(meta_diet$Age)
-
 
 ```
 
@@ -767,6 +761,9 @@ t.test(lf_ob_diet["Observed"], hf_ob_diet["Observed"])
 
 ```{r diet vs mb alpha diversity - shannon and observed and inv simp}
 
+# plot diet vs mb alpha diversity by different measures
+  # include a best fit line
+
 ## Shannon
 diet_mb_adiv <- adiv_meta %>% 
   select(sample_id, community, season, Shannon) %>% 
@@ -838,8 +835,8 @@ diet_mb_is %>%
 
 cor.test(diet_mb_is$diet_is, diet_mb_is$mb_is)
 
-
-# diet observed vs mb shannon (and vice versa)
+## plotting different adiv measures by eachother 
+# diet observed vs mb shannon
 diet_mb_adiv <- diet_mb_adiv %>% 
   left_join(diet_mb_obs, by = c("sample_id", "Metabarcoding Sample ID", "community", "season"))
 
@@ -855,6 +852,7 @@ diet_mb_adiv %>%
 
 cor.test(diet_mb_adiv$diet_ob, diet_mb_adiv$mb_shannon)
 
+# diet shannon vs mb observed
 diet_mb_adiv %>% 
   ggplot(aes(x = diet_shannon, y = mb_ob)) +
   geom_jitter(height = 0.4, width = 0.4) + 
@@ -870,6 +868,9 @@ cor.test(diet_mb_adiv$diet_shannon, diet_mb_adiv$mb_ob)
 ```
 
 ```{r combo box plots - season}
+# generate box plots for each measure of microbiome and diet diversity (observed,
+# shannon, and invsimpson) split by both season and community
+
 ## diet diversity (shan)
 # stats
 dryK_shan_diet <- adiv_meta_diet %>% 
@@ -1070,8 +1071,6 @@ diet_mb_obs %>%
   ylim(160,820) +
   theme_minimal()
 
-
-
 # diet diversity (inv simp)
 diet_mb_is %>% 
   ggplot(aes(x = season, y = diet_is, color = community, fill = season)) +
@@ -1107,6 +1106,10 @@ summary(mdiv_is)
 ```
 
 ```{r combo box plots - fruit season}
+
+# generate box plots for each measure of microbiome and diet diversity (observed,
+# shannon, and invsimpson) split by both fruit season and community
+  # add significance lines to plots where relevant
 
 diet_mb_fruitseason <- adiv_meta %>% 
   select(sample_id, community, season, ripe_fruit_level, Observed, Shannon, InvSimpson) %>% 
@@ -1321,6 +1324,10 @@ diet_mb_fruitseason %>%
 
 ```{r zarin data with alpha divserity}
 
+# generate adiv measures for the observational (Zarin) data -- both richness
+# and shannon index/inv simpson from vegan::diversity
+  # compare to metabarcoding adiv measures (not signficant)
+
 # count obs number of species eaten for each sample
 obs_species_counts <- count(community_counts_long, metabarcoding_sample_id) %>% 
   rename(obs_count = n)
@@ -1348,7 +1355,6 @@ invsimp <- vegan::diversity(community_counts_shan, index="invsimpson")
 shans <- vegan::diversity(community_counts_shan, index="shannon")
   # this gives the shannon index -- but it is based on minutes observed eating 
   # each species (vs its relative read abundance for microbiome)
-  # MEC -- be sure to note this
 
 # make a dataframe of mbc ids and shannon index and inv simpson
 community_obs_adiv <- data.frame(community_counts_shan_mbc$metabarcoding_sample_id, shans, invsimp) %>% 
@@ -1365,8 +1371,7 @@ obs_adiv <- obs_species_counts %>%
          Shannon, InvSimpson, Community, Sex, season, ripe_fruit_level)
 
 
-## compare observed and metabarcoding alpha diversity!
-
+## compare observed-diet and metabarcoding-diet alpha diversity!
 # shannon
 obs_adiv %>% 
   ggplot(aes(x = obs_shannon, y = Shannon)) +
@@ -1438,6 +1443,8 @@ cor.test(y$obs_count, y$Observed)
 
 ```{r micrbiome vs observed (zarin) diet}
 
+# plot observed (Zarin) diet data against microbiome adiv
+
 # join the focal adiv stats and the microbiome adiv stats
 focal_vs_mb <- obs_adiv %>% 
   left_join(diet_mb_adiv, by = c('metabarcoding_sample_id' = 'Metabarcoding Sample ID')) %>% 
@@ -1486,7 +1493,7 @@ cor.test(focal_vs_mb$obs_invsimp, focal_vs_mb$mb_is)
 
 
 
-## ORIGINAL PLOTS (metabarcoding diet not focal diet) WITH ONLY THESE SAMPLES
+## ORIGINAL PLOTS (metabarcoding diet not focal diet) WITH ONLY THESE SAMPLES (filtered)
 filtered <- diet_mb_adiv %>% 
   filter(`Metabarcoding Sample ID` %in% focal_vs_mb$metabarcoding_sample_id) 
 
@@ -1886,6 +1893,7 @@ ggplot(kan_nas_rc , aes(x=factor(SampleID, SampleID), y=na_reads)) +
 
 ```{r ttest - perc NA for K and N samples}
 
+# add N and K rows, then combine
 ngogo_nas_rc <- ngogo_nas_rc %>% 
   mutate(community = "Ngogo")
 kan_nas_rc <- kan_nas_rc%>% 
@@ -1893,6 +1901,7 @@ kan_nas_rc <- kan_nas_rc%>%
 
 kandn_nas_rc <- rbind(ngogo_nas_rc, kan_nas_rc)
 
+# add in the mbc id information
 kandn_perc_nas <- meta_diet %>% 
   select(`Metabarcoding Sample ID`, Community) %>% 
   left_join(kandn_nas_rc, by = c("Metabarcoding Sample ID" = "SampleID", 
@@ -2964,6 +2973,7 @@ mbc_by_foodid <- asv_table_diet %>%
   summarise_each(list(sum)) %>%
   drop_na()
 
+# make yes/no columns for the presence of the key plants
 prescence_of_top3 <- mbc_by_foodid %>% 
   filter(food_id %in% c("CAF", "PTE", "CHT")) %>% 
   column_to_rownames("food_id") %>% 
@@ -3005,6 +3015,9 @@ genussp_normalized_mb_indivplants = Maaslin2(
 
 
 ```
+
+
+
 
 
 
