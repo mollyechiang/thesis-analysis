@@ -1,4 +1,4 @@
 # Thesis Analysis
 R code for Molly Chiang's Human Evolutionary Biology Senior Honor Thesis.
 
-Code contained in thesis-analysis.Rmd, other files are data files.
+Code contained in thesis-analysis.Rmd.
